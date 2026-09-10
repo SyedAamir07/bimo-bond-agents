@@ -1,0 +1,20 @@
+[project]
+name = "bimo-bond-foundation"
+version = "0.2.0"
+description = "Shared foundation library for all Bimo Bond agents (config, logging, event bus, base agent, health)."
+requires-python = ">=3.10"
+dependencies = [
+  "redis>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.package-dir]
+foundation = "."
+
+[tool.setuptools]
+packages = ["foundation"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,8 @@
+{
+  "agent_name": "New Agent",
+  "agent_slug": "{{ cookiecutter.agent_name.lower().replace(' ', '_') }}",
+  "agent_objective": "Describe what this agent is responsible for.",
+  "subscribed_topics": "topic.one,topic.two",
+  "permission_scopes": "scope.read.example",
+  "author": "Bimo Bond Engineering"
+}
