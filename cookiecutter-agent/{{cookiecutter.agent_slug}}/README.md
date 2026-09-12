@@ -3,12 +3,12 @@
 {{cookiecutter.agent_objective}}
 
 Generated from the Bimo Bond agent cookiecutter template — see
-`foundation/README.md` for what's shared vs. agent-specific.
+`../../foundation/README.md` for what's shared vs. agent-specific.
 
 ## Agent contract
 
 Machine-readable contract lives on the agent class as `contract = AgentContract(...)`
-and is served at `GET /contract`. Keep the README table in sync while filling fields:
+and is served at `GET /contract`. Keep this table in sync while filling fields:
 
 | Field | Value |
 |---|---|
@@ -35,15 +35,53 @@ BACKEND_API_TOKEN=
 
 ## Run locally
 
+From this agent folder:
+
 ```bash
-pip install -e ../foundation
+pip install -e ../../foundation
 pip install -r requirements.txt
 cp .env.example .env
 python -m src.{{cookiecutter.agent_slug}}.main
 ```
 
+Ops endpoints (default `HEALTH_PORT=8080`):
+
+- `GET /health`
+- `GET /contract`
+- `GET /metrics`
+- `GET /audit`
+- `GET /acceptance`
+
 ## Test
 
+From this folder:
+
 ```bash
-pytest tests/
+pytest
+```
+
+From repo root (after `generate_agent.py` wired pytest.ini):
+
+```bash
+pytest agents/{{cookiecutter.agent_slug}}/tests
+```
+
+## Docker Compose
+
+Add a service to the repo-root `docker-compose.yml` (pick a free host port):
+
+```yaml
+  {{cookiecutter.agent_slug}}:
+    build:
+      context: .
+      dockerfile: agents/{{cookiecutter.agent_slug}}/Dockerfile
+    env_file: agents/{{cookiecutter.agent_slug}}/.env.example
+    environment:
+      EVENT_BUS_URL: redis://redis:6379/0
+      AGENT_EVENTS_STREAM: agent:events
+    ports:
+      - "8085:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
 ```

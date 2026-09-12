@@ -1,4 +1,4 @@
 # Shared foundation library (config, logging, event bus, BaseAgent, health)
--e ../foundation
+-e ../../foundation
 
 # Add this agent's own dependencies below

@@ -2,9 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# foundation/ is copied in alongside the agent so the editable install works
+# Repo root is the build context (see docker-compose.yml).
 COPY foundation /foundation
-COPY {{cookiecutter.agent_slug}} /app
+COPY agents/{{cookiecutter.agent_slug}} /app
 
 RUN pip install --no-cache-dir -e /foundation && \
     pip install --no-cache-dir -r requirements.txt

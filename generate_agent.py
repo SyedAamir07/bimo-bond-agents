@@ -2,33 +2,31 @@
 """
 generate_agent.py
 
-Expands cookiecutter-agent/ into a real agent folder, substituting the
-{{cookiecutter.*}} placeholders. Functionally equivalent to running:
+Expands cookiecutter-agent/ into a real agent folder under agents/,
+substituting the {{cookiecutter.*}} placeholders.
+
+No third-party deps required (plain string substitution). Equivalent to:
 
     cookiecutter cookiecutter-agent/
-
-but implemented directly with Jinja2 so it works without installing the
-`cookiecutter` CLI (useful in offline/restricted environments). Once you
-have network access, prefer the real `cookiecutter` CLI for new agents --
-this script exists to unblock generating the sample agents right now.
 
 Usage:
     python generate_agent.py \
         --agent-name "Camera Agent" \
         --agent-objective "Manage camera functions and image quality." \
         --subscribed-topics "camera.settings.changed" \
-        --permission-scopes "device.camera.read,device.camera.write" \
-        --output-dir .
+        --permission-scopes "device.camera.read,device.camera.write"
 """
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 from pathlib import Path
 
-from jinja2 import Template
-
-TEMPLATE_ROOT = Path(__file__).parent / "cookiecutter-agent" / "{{cookiecutter.agent_slug}}"
+REPO_ROOT = Path(__file__).parent
+TEMPLATE_ROOT = REPO_ROOT / "cookiecutter-agent" / "{{cookiecutter.agent_slug}}"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "agents"
+PYTEST_INI = REPO_ROOT / "pytest.ini"
 
 
 def slugify(name: str) -> str:
@@ -39,34 +37,91 @@ def class_name(name: str) -> str:
     return name.title().replace(" ", "")
 
 
-def render_context(agent_name: str, agent_objective: str, subscribed_topics: str, permission_scopes: str, author: str) -> dict:
-    return {
-        "cookiecutter": {
-            "agent_name": agent_name,
-            "agent_slug": slugify(agent_name),
-            "agent_objective": agent_objective,
-            "subscribed_topics": subscribed_topics,
-            "permission_scopes": permission_scopes,
-            "author": author,
-        }
-    }
+def build_replacements(
+    agent_name: str,
+    agent_objective: str,
+    subscribed_topics: str,
+    permission_scopes: str,
+    author: str,
+) -> list[tuple[str, str]]:
+    slug = slugify(agent_name)
+    # Longer / more specific tokens first so partial replaces stay correct.
+    return [
+        (
+            "{{cookiecutter.agent_name.title().replace(' ', '')}}",
+            class_name(agent_name),
+        ),
+        ("{{cookiecutter.agent_name}}", agent_name),
+        ("{{cookiecutter.agent_slug}}", slug),
+        ("{{cookiecutter.agent_objective}}", agent_objective),
+        ("{{cookiecutter.subscribed_topics}}", subscribed_topics),
+        ("{{cookiecutter.permission_scopes}}", permission_scopes),
+        ("{{cookiecutter.author}}", author),
+    ]
 
 
-def render_string(text: str, context: dict) -> str:
-    # Support the two expressions the templates actually use, in addition
-    # to plain {{cookiecutter.field}} substitution.
-    ctx = context["cookiecutter"]
-    text = text.replace(
-        "{{cookiecutter.agent_name.title().replace(' ', '')}}",
-        class_name(ctx["agent_name"]),
+def render_string(text: str, replacements: list[tuple[str, str]]) -> str:
+    for old, new in replacements:
+        text = text.replace(old, new)
+    leftover = re.findall(r"\{\{\s*cookiecutter\.[^}]+\}\}", text)
+    if leftover:
+        raise ValueError(f"Unresolved cookiecutter placeholders: {leftover}")
+    return text
+
+
+def _ensure_pytest_ini(slug: str) -> None:
+    """Wire the new agent into the root pytest.ini pythonpath + testpaths."""
+    if not PYTEST_INI.exists():
+        print(f"Warning: {PYTEST_INI} missing — skip pytest wiring")
+        return
+
+    text = PYTEST_INI.read_text(encoding="utf-8")
+    src_line = f"    agents/{slug}/src"
+    tests_line = f"    agents/{slug}/tests"
+    changed = False
+
+    if src_line not in text:
+        if re.search(r"(?m)^testpaths\s*=", text):
+            text = re.sub(
+                r"(?m)^(testpaths\s*=)",
+                src_line + "\n\\1",
+                text,
+                count=1,
+            )
+            changed = True
+        else:
+            text += f"\npythonpath =\n{src_line}\n"
+            changed = True
+
+    if tests_line not in text:
+        if not text.endswith("\n"):
+            text += "\n"
+        text += tests_line + "\n"
+        changed = True
+
+    if changed:
+        PYTEST_INI.write_text(text, encoding="utf-8")
+        print(f"Updated {PYTEST_INI.name} for agents/{slug}")
+
+
+def generate(
+    agent_name: str,
+    agent_objective: str,
+    subscribed_topics: str,
+    permission_scopes: str,
+    output_dir: Path,
+    author: str = "Bimo Bond Engineering",
+    *,
+    wire_pytest: bool = True,
+) -> Path:
+    replacements = build_replacements(
+        agent_name, agent_objective, subscribed_topics, permission_scopes, author
     )
-    return Template(text).render(context)
-
-
-def generate(agent_name: str, agent_objective: str, subscribed_topics: str, permission_scopes: str, output_dir: Path, author: str = "Bimo Bond Engineering") -> Path:
-    context = render_context(agent_name, agent_objective, subscribed_topics, permission_scopes, author)
     slug = slugify(agent_name)
     dest_root = output_dir / slug
+
+    if not TEMPLATE_ROOT.is_dir():
+        raise FileNotFoundError(f"Template missing: {TEMPLATE_ROOT}")
 
     if dest_root.exists():
         shutil.rmtree(dest_root)
@@ -82,28 +137,58 @@ def generate(agent_name: str, agent_objective: str, subscribed_topics: str, perm
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         raw = src_path.read_text(encoding="utf-8")
-        rendered = render_string(raw, context)
+        rendered = render_string(raw, replacements)
         dest_path.write_text(rendered, encoding="utf-8")
 
+    init_py = dest_root / "src" / slug / "__init__.py"
+    init_py.parent.mkdir(parents=True, exist_ok=True)
+    if not init_py.exists():
+        init_py.write_text("", encoding="utf-8")
+
+    if wire_pytest and output_dir.resolve() == DEFAULT_OUTPUT_DIR.resolve():
+        _ensure_pytest_ini(slug)
+
     print(f"Generated agent '{agent_name}' -> {dest_root}")
+    print(
+        "Next: implement handle_event(), fill contract TODOs, "
+        f"and add a Compose service for agents/{slug} (see agent README)."
+    )
     return dest_root
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate a new agent from the cookiecutter-agent template.")
+    parser = argparse.ArgumentParser(
+        description="Generate a new agent from the cookiecutter-agent template."
+    )
     parser.add_argument("--agent-name", required=True)
     parser.add_argument("--agent-objective", required=True)
     parser.add_argument("--subscribed-topics", default="")
     parser.add_argument("--permission-scopes", default="")
     parser.add_argument("--author", default="Bimo Bond Engineering")
-    parser.add_argument("--output-dir", default=".", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        default=DEFAULT_OUTPUT_DIR,
+        type=Path,
+        help="Where to place the new agent folder (default: ./agents)",
+    )
+    parser.add_argument(
+        "--no-pytest-wire",
+        action="store_true",
+        help="Do not update root pytest.ini",
+    )
     args = parser.parse_args()
+
+    output_dir = args.output_dir
+    if not output_dir.is_absolute():
+        output_dir = (Path.cwd() / output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     generate(
         agent_name=args.agent_name,
         agent_objective=args.agent_objective,
         subscribed_topics=args.subscribed_topics,
         permission_scopes=args.permission_scopes,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         author=args.author,
+        wire_pytest=not args.no_pytest_wire,
     )
