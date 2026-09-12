@@ -6,6 +6,14 @@ logging, the event envelope, the event-bus client, permissions, contracts,
 or the NestJS backend bridge. This is the "standardized channel" referenced
 in the technical foundation document.
 """
+from .acceptance import AcceptanceTarget, AcceptanceTracker, PILOT_TARGETS
+from .auction_rules import (
+    AuctionDecision,
+    EligibilityResult,
+    GiftContribution,
+    resolve_purchase_eligibility,
+)
+from .audit import AuditLog, AuditRecord
 from .backend import BackendClient, BackendClientDisabled
 from .config import AgentSettings
 from .contracts import AgentContract, EventEnvelope, validate_event_payload
@@ -15,6 +23,7 @@ from .health import HealthStatus, Status
 from .metrics import AgentMetrics
 from .permissions import PermissionDenied, assert_scope, has_scope
 from .reliability import EventDeduplicator, RetryPolicy
+from .retention import DEFAULT_RETENTION, RetentionPolicy, get_retention, parse_occurred_at
 
 __all__ = [
     "AgentSettings",
@@ -36,4 +45,17 @@ __all__ = [
     "has_scope",
     "EventDeduplicator",
     "RetryPolicy",
+    "AuditLog",
+    "AuditRecord",
+    "AcceptanceTarget",
+    "AcceptanceTracker",
+    "PILOT_TARGETS",
+    "RetentionPolicy",
+    "DEFAULT_RETENTION",
+    "get_retention",
+    "parse_occurred_at",
+    "AuctionDecision",
+    "EligibilityResult",
+    "GiftContribution",
+    "resolve_purchase_eligibility",
 ]

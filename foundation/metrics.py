@@ -32,12 +32,15 @@ class AgentMetrics:
             self._latency_count[name] += 1
 
     @contextmanager
-    def timer(self, name: str) -> Iterator[None]:
+    def timer(self, name: str) -> Iterator[dict[str, float]]:
+        """Yield a dict that receives `ms` after the block finishes."""
         start = time.perf_counter()
+        holder: dict[str, float] = {}
         try:
-            yield
+            yield holder
         finally:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
+            holder["ms"] = elapsed_ms
             self.observe_ms(name, elapsed_ms)
 
     def to_prometheus(self) -> str:

@@ -1,5 +1,5 @@
 """
-HTTP health / contract / metrics server shared by every agent.
+HTTP health / contract / metrics / audit / acceptance server.
 
 Listens on AgentSettings.health_port so Compose port mappings work.
 """
@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from .acceptance import AcceptanceTracker
+    from .audit import AuditLog
     from .contracts import AgentContract
     from .health import HealthStatus
     from .metrics import AgentMetrics
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class HealthServer:
-    """Background ThreadingHTTPServer exposing /health, /contract, /metrics."""
+    """Background ThreadingHTTPServer exposing ops endpoints."""
 
     def __init__(
         self,
@@ -29,11 +31,15 @@ class HealthServer:
         health_provider: Callable[[], HealthStatus],
         contract_provider: Callable[[], AgentContract | None],
         metrics_provider: Callable[[], AgentMetrics],
+        audit_provider: Callable[[], AuditLog] | None = None,
+        acceptance_provider: Callable[[], AcceptanceTracker] | None = None,
     ) -> None:
         self.port = port
         self._health_provider = health_provider
         self._contract_provider = contract_provider
         self._metrics_provider = metrics_provider
+        self._audit_provider = audit_provider
+        self._acceptance_provider = acceptance_provider
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -66,6 +72,16 @@ class HealthServer:
                     self.send_header("Content-Length", str(len(raw)))
                     self.end_headers()
                     self.wfile.write(raw)
+                elif path == "/audit":
+                    if outer._audit_provider is None:
+                        self._json(404, {"error": "audit not registered"})
+                    else:
+                        self._json(200, {"records": outer._audit_provider().to_list(100)})
+                elif path == "/acceptance":
+                    if outer._acceptance_provider is None:
+                        self._json(404, {"error": "acceptance not registered"})
+                    else:
+                        self._json(200, outer._acceptance_provider().report())
                 else:
                     self._json(404, {"error": "not found"})
 

@@ -15,6 +15,8 @@ from abc import ABC, abstractmethod
 from types import FrameType
 from typing import Any
 
+from .acceptance import AcceptanceTracker
+from .audit import AuditLog
 from .backend import BackendClient
 from .config import AgentSettings
 from .contracts import AgentContract, EventEnvelope, validate_event_payload
@@ -64,6 +66,11 @@ class BaseAgent(ABC):
         )
         self.health = HealthStatus(agent_name=settings.agent_name)
         self.metrics = AgentMetrics(agent_name=settings.agent_name)
+        self.audit = AuditLog(
+            settings.agent_name,
+            max_records=settings.audit_max_records,
+        )
+        self.acceptance = AcceptanceTracker()
         self._dedup = EventDeduplicator(max_size=settings.dedup_max_size)
         self._retry = RetryPolicy(max_attempts=settings.handler_max_attempts)
         self.backend = BackendClient(
@@ -76,6 +83,8 @@ class BaseAgent(ABC):
             health_provider=lambda: self.health,
             contract_provider=self.get_contract,
             metrics_provider=lambda: self.metrics,
+            audit_provider=lambda: self.audit,
+            acceptance_provider=lambda: self.acceptance,
         )
 
         if self.contract is None:
@@ -152,6 +161,13 @@ class BaseAgent(ABC):
 
         if self._dedup.seen_before(event.event_id):
             self.metrics.incr("duplicates_dropped")
+            self.audit.record(
+                "event.duplicate_dropped",
+                outcome="denied",
+                event_id=event.event_id,
+                correlation_id=event.correlation_id,
+                detail={"event_type": event.event_type},
+            )
             log.info("Duplicate event_id=%s dropped", event.event_id)
             return
 
@@ -161,6 +177,14 @@ class BaseAgent(ABC):
                 assert_scope(self.settings, required_scope)
             except PermissionDenied as exc:
                 self.metrics.incr("permission_denied")
+                self.audit.record(
+                    "event.permission_denied",
+                    outcome="denied",
+                    scope=required_scope,
+                    event_id=event.event_id,
+                    correlation_id=event.correlation_id,
+                    detail={"event_type": event.event_type},
+                )
                 log.warning("%s event_id=%s", exc, event.event_id)
                 return
 
@@ -176,7 +200,7 @@ class BaseAgent(ABC):
             # Soft-fail: still deliver so agents can decide; metrics track it.
 
         try:
-            with self.metrics.timer("handler_latency"):
+            with self.metrics.timer("handler_latency") as elapsed_holder:
                 self._retry.run(
                     lambda: self.handle_event(event),
                     on_attempt_fail=lambda attempt, err: log.warning(
@@ -187,8 +211,18 @@ class BaseAgent(ABC):
                     ),
                 )
             self.metrics.incr("events_handled")
+            latency_ms = elapsed_holder.get("ms")
+            if latency_ms is not None:
+                self.acceptance.observe("handler_latency_ms", latency_ms)
         except Exception:  # noqa: BLE001
             self.metrics.incr("events_failed")
+            self.audit.record(
+                "event.handle_failed",
+                outcome="failed",
+                event_id=event.event_id,
+                correlation_id=event.correlation_id,
+                detail={"event_type": event.event_type},
+            )
             log.exception(
                 "Failed handling event_type=%s event_id=%s",
                 event.event_type,
@@ -204,6 +238,11 @@ class BaseAgent(ABC):
     def require_scope(self, scope: str) -> None:
         """Call from agent code before a privileged side effect."""
         assert_scope(self.settings, scope)
+        self.audit.record(
+            "scope.asserted",
+            outcome="success",
+            scope=scope,
+        )
 
     def publish(
         self,
@@ -225,6 +264,14 @@ class BaseAgent(ABC):
         )
         self.event_bus.publish(event)
         self.metrics.incr("events_published")
+        self.audit.record(
+            "event.published",
+            outcome="success",
+            scope=required_scope,
+            event_id=event.event_id,
+            correlation_id=correlation_id,
+            detail={"event_type": event_type},
+        )
         self.logger.debug(
             "Published event_type=%s event_id=%s",
             event_type,

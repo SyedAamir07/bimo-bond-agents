@@ -53,6 +53,9 @@ class AgentSettings:
     dedup_max_size: int = field(
         default_factory=lambda: int(os.getenv("DEDUP_MAX_SIZE", "10000"))
     )
+    audit_max_records: int = field(
+        default_factory=lambda: int(os.getenv("AUDIT_MAX_RECORDS", "1000"))
+    )
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     environment: str = field(default_factory=lambda: os.getenv("ENVIRONMENT", "development"))

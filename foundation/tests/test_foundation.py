@@ -219,5 +219,78 @@ def test_health_and_contract_endpoints():
         with urllib.request.urlopen("http://127.0.0.1:18083/metrics") as resp:
             metrics = resp.read().decode()
         assert "agent_" in metrics or metrics == "\n" or True
+
+        with urllib.request.urlopen("http://127.0.0.1:18083/audit") as resp:
+            audit = json.loads(resp.read().decode())
+        assert "records" in audit
+
+        with urllib.request.urlopen("http://127.0.0.1:18083/acceptance") as resp:
+            acceptance = json.loads(resp.read().decode())
+        assert "handler_latency_ms" in acceptance
     finally:
         agent.shutdown()
+
+
+def test_audit_redacts_secrets():
+    from foundation import AuditLog
+
+    log = AuditLog("a")
+    rec = log.record("x", detail={"token": "secret", "ok": 1})
+    assert rec.detail["token"] == "[redacted]"
+    assert rec.detail["ok"] == 1
+
+
+def test_retention_expiry():
+    from datetime import datetime, timedelta, timezone
+
+    from foundation import get_retention
+
+    policy = get_retention("event_envelope")
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    assert policy.is_expired(old) is True
+    assert policy.is_expired(datetime.now(timezone.utc)) is False
+
+
+def test_acceptance_targets():
+    from foundation import AcceptanceTracker, PILOT_TARGETS
+
+    assert "gift_effect_latency_ms" in PILOT_TARGETS
+    t = AcceptanceTracker()
+    status = t.observe("gift_effect_latency_ms", 100.0)
+    assert status == "meeting"
+    status_bad = t.observe("gift_effect_latency_ms", 9999.0)
+    assert status_bad == "above_target"
+    report = t.report()
+    assert report["gift_effect_latency_ms"]["samples"] >= 2
+
+
+def test_auction_eligibility_rules():
+    from foundation import AuctionDecision, GiftContribution, resolve_purchase_eligibility
+
+    a = GiftContribution("e1", "u1", 10, "2026-01-01T00:00:00+00:00")
+    b = GiftContribution("e2", "u2", 10, "2026-01-01T00:01:00+00:00")
+    result = resolve_purchase_eligibility([a, b])
+    assert result.decision == AuctionDecision.TIE_BREAK_EARLIEST
+    assert result.winner_user_id == "u1"
+
+    dup = resolve_purchase_eligibility([a], seen_event_ids={"e1"})
+    assert dup.decision == AuctionDecision.REJECTED_DUPLICATE
+
+    cancelled = resolve_purchase_eligibility(
+        [GiftContribution("e3", "u3", 5, "2026-01-01T00:00:00+00:00", cancelled=True)]
+    )
+    assert cancelled.decision == AuctionDecision.REJECTED_CANCELLED
+
+    pay = resolve_purchase_eligibility(
+        [GiftContribution("e4", "u4", 5, "2026-01-01T00:00:00+00:00", payment_failed=True)]
+    )
+    assert pay.decision == AuctionDecision.REJECTED_PAYMENT_FAILED
+
+    win = resolve_purchase_eligibility(
+        [
+            GiftContribution("e5", "u5", 3, "2026-01-01T00:00:00+00:00"),
+            GiftContribution("e6", "u6", 9, "2026-01-01T00:02:00+00:00"),
+        ]
+    )
+    assert win.decision == AuctionDecision.ELIGIBLE
+    assert win.winner_user_id == "u6"
