@@ -16,11 +16,12 @@ fan-out, HTTP backend client, and health/metrics endpoints.
 bimo-bond-agents/
 ├── foundation/              # shared library every agent depends on
 ├── cookiecutter-agent/      # template for scaffolding NEW agents
-├── generate_agent.py
-├── camera_agent/
-├── live_streaming_agent/
-├── gift_effects_agent/
-├── orchestration_agent/
+├── generate_agent.py        # writes new agents into agents/
+├── agents/                  # all concrete agents
+│   ├── camera_agent/
+│   ├── live_streaming_agent/
+│   ├── gift_effects_agent/
+│   └── orchestration_agent/
 └── docker-compose.yml       # redis + all agents (shared EVENT_BUS_URL)
 ```
 
@@ -48,6 +49,8 @@ for orchestration-driven flows.
 
 ## Generate a new agent
 
+New agents are created under `agents/` by default:
+
 ```bash
 python generate_agent.py \
   --agent-name "Content Moderation Agent" \
@@ -55,6 +58,9 @@ python generate_agent.py \
   --subscribed-topics "content.uploaded,stream.frame.sampled" \
   --permission-scopes "content.moderation.read,content.moderation.flag"
 ```
+
+Then add a service block in `docker-compose.yml` pointing at
+`agents/<slug>/Dockerfile`.
 
 ## Run locally (Compose — shared Redis)
 
@@ -74,6 +80,12 @@ Health / contract / metrics:
 ```bash
 pip install -e "./foundation[dev]"
 cd foundation && pytest
+```
+
+Root pytest also covers agents:
+
+```bash
+pytest
 ```
 
 ## NestJS bridge
