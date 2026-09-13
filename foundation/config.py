@@ -57,6 +57,17 @@ class AgentSettings:
         default_factory=lambda: int(os.getenv("AUDIT_MAX_RECORDS", "1000"))
     )
 
+    # Redis Streams ops: approximate maxlen + poison-message DLQ
+    stream_maxlen: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_STREAM_MAXLEN", "100000"))
+    )
+    max_deliveries: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_MAX_DELIVERIES", "5"))
+    )
+    dlq_stream_key: str = field(
+        default_factory=lambda: os.getenv("AGENT_EVENTS_DLQ_STREAM", "agent:events:dlq")
+    )
+
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     environment: str = field(default_factory=lambda: os.getenv("ENVIRONMENT", "development"))
     health_port: int = field(default_factory=lambda: int(os.getenv("HEALTH_PORT", "8080")))

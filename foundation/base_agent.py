@@ -27,6 +27,7 @@ from .logging_setup import configure_logging
 from .metrics import AgentMetrics
 from .permissions import PermissionDenied, assert_scope
 from .reliability import EventDeduplicator, RetryPolicy
+from .retention import get_retention, parse_occurred_at
 
 
 class BaseAgent(ABC):
@@ -63,6 +64,9 @@ class BaseAgent(ABC):
             stream_key=settings.event_stream_key,
             consumer_group=settings.resolved_consumer_group(),
             dedup_max_size=settings.dedup_max_size,
+            stream_maxlen=settings.stream_maxlen,
+            max_deliveries=settings.max_deliveries,
+            dlq_stream_key=settings.dlq_stream_key,
         )
         self.health = HealthStatus(agent_name=settings.agent_name)
         self.metrics = AgentMetrics(agent_name=settings.agent_name)
@@ -169,6 +173,19 @@ class BaseAgent(ABC):
                 detail={"event_type": event.event_type},
             )
             log.info("Duplicate event_id=%s dropped", event.event_id)
+            return
+
+        occurred = parse_occurred_at(event.occurred_at)
+        if occurred is not None and get_retention("event_envelope").is_expired(occurred):
+            self.metrics.incr("events_expired")
+            self.audit.record(
+                "event.expired_dropped",
+                outcome="denied",
+                event_id=event.event_id,
+                correlation_id=event.correlation_id,
+                detail={"event_type": event.event_type, "occurred_at": event.occurred_at},
+            )
+            log.info("Expired event_id=%s dropped (retention)", event.event_id)
             return
 
         required_scope = event.payload.get("required_scope")

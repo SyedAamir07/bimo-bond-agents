@@ -68,7 +68,10 @@ pytest agents/{{cookiecutter.agent_slug}}/tests
 
 ## Docker Compose
 
-Add a service to the repo-root `docker-compose.yml` (pick a free host port):
+`generate_agent.py` wires a Compose service automatically when targeting
+`./agents`. To skip: `--no-compose-wire`.
+
+Manual example (host port is auto-picked by the generator):
 
 ```yaml
   {{cookiecutter.agent_slug}}:

@@ -88,13 +88,21 @@ class InMemoryEventBus(EventBus):
         logger.info("InMemoryEventBus stopped")
 
 
+def should_dead_letter(delivery_count: int, max_deliveries: int) -> bool:
+    """Pure helper — poison messages go to DLQ once delivery_count exceeds max."""
+    if max_deliveries <= 0:
+        return False
+    return delivery_count > max_deliveries
+
+
 class RedisStreamsEventBus(EventBus):
     """
     Shared Redis Streams bus — all agents (and NestJS fan-out) use one stream.
 
-    - publish → XADD
+    - publish → XADD (approximate MAXLEN trim)
     - consume → XREADGROUP per agent consumer group + XACK after handlers run
     - On start, XAUTOCLAIM reclaim pending messages older than min_idle_ms
+    - Poison messages: after max_deliveries failures → DLQ stream + XACK
     """
 
     def __init__(
@@ -107,6 +115,9 @@ class RedisStreamsEventBus(EventBus):
         block_ms: int = 2000,
         count: int = 16,
         min_idle_ms: int = 60_000,
+        stream_maxlen: int = 100_000,
+        max_deliveries: int = 5,
+        dlq_stream_key: str = "agent:events:dlq",
     ) -> None:
         try:
             import redis as redis_lib
@@ -124,11 +135,17 @@ class RedisStreamsEventBus(EventBus):
         self.block_ms = block_ms
         self.count = count
         self.min_idle_ms = min_idle_ms
+        self.stream_maxlen = stream_maxlen
+        self.max_deliveries = max_deliveries
+        self.dlq_stream_key = dlq_stream_key
 
         self._client = redis_lib.from_url(redis_url, decode_responses=True)
         self._handlers: dict[str, list[Handler]] = defaultdict(list)
         self._running = False
         self._thread: threading.Thread | None = None
+
+    def _delivery_hash_key(self) -> str:
+        return f"{self.stream_key}:deliveries:{self.consumer_group}"
 
     def subscribe(self, topic: str, handler: Handler) -> None:
         self._handlers[topic].append(handler)
@@ -140,7 +157,6 @@ class RedisStreamsEventBus(EventBus):
 
     def publish(self, event: EventEnvelope) -> None:
         data = event.to_dict()
-        # Redis stream fields must be strings; nest payload as JSON.
         fields = {
             "event_id": data["event_id"],
             "event_type": data["event_type"],
@@ -150,7 +166,11 @@ class RedisStreamsEventBus(EventBus):
             "schema_version": str(data["schema_version"]),
             "payload": json.dumps(data["payload"]),
         }
-        self._client.xadd(self.stream_key, fields)
+        kwargs: dict = {"name": self.stream_key, "fields": fields}
+        if self.stream_maxlen > 0:
+            kwargs["maxlen"] = self.stream_maxlen
+            kwargs["approximate"] = True
+        self._client.xadd(**kwargs)
         logger.debug(
             "XADD stream=%s event_type=%s event_id=%s",
             self.stream_key,
@@ -170,10 +190,11 @@ class RedisStreamsEventBus(EventBus):
         )
         self._thread.start()
         logger.info(
-            "RedisStreamsEventBus started stream=%s group=%s consumer=%s",
+            "RedisStreamsEventBus started stream=%s group=%s consumer=%s dlq=%s",
             self.stream_key,
             self.consumer_group,
             self.consumer_name,
+            self.dlq_stream_key,
         )
 
     def stop(self) -> None:
@@ -230,7 +251,6 @@ class RedisStreamsEventBus(EventBus):
     def _reclaim_pending(self) -> None:
         """XAUTOCLAIM stale pending messages for this consumer group."""
         try:
-            # redis-py: xautoclaim(name, groupname, consumername, min_idle_time, start_id=...)
             result = self._client.xautoclaim(
                 self.stream_key,
                 self.consumer_group,
@@ -239,7 +259,6 @@ class RedisStreamsEventBus(EventBus):
                 start_id="0-0",
                 count=self.count,
             )
-            # result: [next_start_id, [(id, fields), ...], deleted_ids?]
             if not result or len(result) < 2:
                 return
             messages = result[1] or []
@@ -247,10 +266,49 @@ class RedisStreamsEventBus(EventBus):
                 if fields:
                     self._dispatch_and_ack(message_id, fields)
         except Exception:  # noqa: BLE001
-            # Older Redis without XAUTOCLAIM — non-fatal for sample.
             logger.debug("XAUTOCLAIM unavailable or failed", exc_info=True)
 
+    def _bump_delivery(self, message_id: str) -> int:
+        try:
+            return int(self._client.hincrby(self._delivery_hash_key(), message_id, 1))
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to bump delivery count message_id=%s", message_id)
+            return 1
+
+    def _clear_delivery(self, message_id: str) -> None:
+        try:
+            self._client.hdel(self._delivery_hash_key(), message_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to clear delivery count message_id=%s", message_id)
+
+    def _dead_letter(self, message_id: str, fields: dict, delivery_count: int) -> None:
+        dlq_fields = {
+            **{k: (v if isinstance(v, str) else json.dumps(v)) for k, v in fields.items()},
+            "original_stream": self.stream_key,
+            "original_id": message_id,
+            "consumer_group": self.consumer_group,
+            "delivery_count": str(delivery_count),
+            "dead_lettered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        try:
+            self._client.xadd(self.dlq_stream_key, dlq_fields)
+            self._client.xack(self.stream_key, self.consumer_group, message_id)
+            self._clear_delivery(message_id)
+            logger.error(
+                "Dead-lettered message_id=%s deliveries=%s -> %s",
+                message_id,
+                delivery_count,
+                self.dlq_stream_key,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to dead-letter message_id=%s", message_id)
+
     def _dispatch_and_ack(self, message_id: str, fields: dict) -> None:
+        delivery_count = self._bump_delivery(message_id)
+        if should_dead_letter(delivery_count, self.max_deliveries):
+            self._dead_letter(message_id, fields, delivery_count)
+            return
+
         try:
             event = EventEnvelope.from_dict(
                 {
@@ -265,13 +323,14 @@ class RedisStreamsEventBus(EventBus):
             )
         except Exception:  # noqa: BLE001
             logger.exception("Failed to parse stream message_id=%s", message_id)
-            self._client.xack(self.stream_key, self.consumer_group, message_id)
+            self._dead_letter(message_id, fields, delivery_count)
             return
 
         handlers = self._handlers.get(event.event_type, [])
         if not handlers:
             # Not subscribed — ACK so the group does not stall on foreign topics.
             self._client.xack(self.stream_key, self.consumer_group, message_id)
+            self._clear_delivery(message_id)
             return
 
         failed = False
@@ -289,11 +348,14 @@ class RedisStreamsEventBus(EventBus):
 
         if not failed:
             self._client.xack(self.stream_key, self.consumer_group, message_id)
+            self._clear_delivery(message_id)
         else:
-            # Leave pending for XAUTOCLAIM reclaim / retry by another consumer.
             logger.warning(
-                "Leaving message_id=%s pending after handler failure",
+                "Leaving message_id=%s pending after handler failure "
+                "(delivery=%s/%s)",
                 message_id,
+                delivery_count,
+                self.max_deliveries,
             )
 
 
@@ -304,7 +366,6 @@ def _parse_redis_stream_url(event_bus_url: str) -> tuple[str, str]:
     parsed = urlparse(event_bus_url)
     qs = parse_qs(parsed.query)
     stream_key = qs.get("stream", [None])[0] or "agent:events"
-    # Strip query for redis client URL
     clean = event_bus_url.split("?", 1)[0]
     return clean, stream_key
 
@@ -316,6 +377,9 @@ def build_event_bus(
     stream_key: str | None = None,
     consumer_group: str | None = None,
     dedup_max_size: int = 10_000,
+    stream_maxlen: int = 100_000,
+    max_deliveries: int = 5,
+    dlq_stream_key: str = "agent:events:dlq",
 ) -> EventBus:
     """
     Factory: turns config (a URL/scheme) into a concrete EventBus.
@@ -335,6 +399,9 @@ def build_event_bus(
             stream_key=stream_key or url_stream,
             consumer_group=consumer_group or f"cg:{agent_name}",
             consumer_name=f"{agent_name}-1",
+            stream_maxlen=stream_maxlen,
+            max_deliveries=max_deliveries,
+            dlq_stream_key=dlq_stream_key,
         )
 
     if event_bus_url.startswith("kafka://"):

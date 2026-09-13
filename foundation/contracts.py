@@ -21,9 +21,12 @@ EVENT_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
     "camera.feature.toggled": ("feature", "enabled"),
     "gift.sent": ("gift_id",),
     "stream.started": (),
+    "stream.monitor.armed": ("session_id",),
     "liveGiftCombo": ("liveId",),
+    "liveGift": ("liveId",),
     "liveEnded": ("liveId",),
     "liveComment": ("liveId",),
+    "liveModeration": ("liveId",),
 }
 
 

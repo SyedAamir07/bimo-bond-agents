@@ -16,11 +16,11 @@ class LiveStreamingAgent(BaseAgent):
     contract = AgentContract(
         objective=objective,
         inputs=["stream.started", "stream.heartbeat", "stream.interrupted", "liveEnded"],
-        outputs=["stream.reconnect.attempted", "stream.ended"],
+        outputs=["stream.reconnect.attempted", "stream.ended", "stream.monitor.armed"],
         tools=["streaming_infra"],
         permission_scopes=["stream.session.read", "stream.session.write"],
         subscribed_topics=["stream.started", "stream.heartbeat", "stream.interrupted", "liveEnded"],
-        published_topics=["stream.reconnect.attempted", "stream.ended"],
+        published_topics=["stream.reconnect.attempted", "stream.ended", "stream.monitor.armed"],
         failure_cases=["reconnect_exhausted", "infra_unavailable"],
         owner="platform-live",
         acceptance_criteria=["track interruption rate", "reconnect success measurable"],
@@ -54,6 +54,11 @@ class LiveStreamingAgent(BaseAgent):
         if isinstance(startup_ms, (int, float)):
             self.acceptance.observe("stream_startup_ms", float(startup_ms))
         self.logger.info("Stream started session_id=%s", session_id)
+        self.publish(
+            "stream.monitor.armed",
+            payload={"session_id": session_id},
+            correlation_id=event.correlation_id,
+        )
 
     def _handle_heartbeat(self, event: EventEnvelope) -> None:
         self.logger.debug("Heartbeat session_id=%s", event.payload.get("session_id"))

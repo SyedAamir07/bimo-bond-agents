@@ -61,27 +61,43 @@ MAX_RETRIES = 2
 # action that triggered them, so the orchestrator knows to mark a task
 # complete/failed without each agent needing to know the orchestrator exists.
 FAILURE_EVENTS = {"camera.feature.rejected", "stream.ended", "gift.effect.skipped"}
+SUCCESS_EVENTS = {
+    "camera.feature.applied",
+    "gift.effect.triggered",
+    "stream.monitor.armed",
+}
 
 
 class OrchestrationAgent(BaseAgent):
     objective = "Coordinate events and tasks across agents, track execution status, and manage timeouts, retries, and duplicate execution prevention."
     contract = AgentContract(
         objective=objective,
-        inputs=["task.requested", "camera.feature.rejected", "stream.ended", "gift.effect.skipped"],
+        inputs=[
+            "task.requested",
+            "camera.feature.rejected",
+            "camera.feature.applied",
+            "stream.ended",
+            "stream.monitor.armed",
+            "gift.effect.skipped",
+            "gift.effect.triggered",
+        ],
         outputs=["camera.feature.toggled", "gift.sent", "stream.started", "task.failed"],
         tools=["routing_table"],
         permission_scopes=["orchestration.route.dispatch"],
         subscribed_topics=[
             "task.requested",
             "camera.feature.rejected",
+            "camera.feature.applied",
             "stream.ended",
+            "stream.monitor.armed",
             "gift.effect.skipped",
+            "gift.effect.triggered",
         ],
         published_topics=["camera.feature.toggled", "gift.sent", "stream.started", "task.failed"],
         failure_cases=["unknown_action", "timeout", "max_retries"],
         owner="platform-platform",
         acceptance_criteria=["no duplicate task_id dispatch", "timeouts retried then failed"],
-        automatic_actions=["route_task", "retry_on_failure", "timeout_sweep"],
+        automatic_actions=["route_task", "retry_on_failure", "timeout_sweep", "mark_completed"],
         human_review_actions=["approve_new_routing_table_entries"],
     )
 
@@ -96,6 +112,8 @@ class OrchestrationAgent(BaseAgent):
             self._handle_task_requested(event)
         elif event.event_type in FAILURE_EVENTS:
             self._handle_target_failure(event)
+        elif event.event_type in SUCCESS_EVENTS:
+            self._handle_target_success(event)
         else:
             self.logger.warning("Unhandled event_type=%s", event.event_type)
 
@@ -144,6 +162,18 @@ class OrchestrationAgent(BaseAgent):
             route["dispatch_event"],
             payload={**event.payload, "required_scope": route["required_scope"]},
             correlation_id=task_id,
+        )
+
+    def _handle_target_success(self, event: EventEnvelope) -> None:
+        task_id = event.correlation_id
+        if not task_id:
+            self.logger.debug("Success event without correlation_id type=%s", event.event_type)
+            return
+        self.mark_completed(task_id)
+        self.logger.info(
+            "task_id=%s completed via event_type=%s",
+            task_id,
+            event.event_type,
         )
 
     # --- failure / retry ---------------------------------------------------

@@ -27,6 +27,8 @@ REPO_ROOT = Path(__file__).parent
 TEMPLATE_ROOT = REPO_ROOT / "cookiecutter-agent" / "{{cookiecutter.agent_slug}}"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "agents"
 PYTEST_INI = REPO_ROOT / "pytest.ini"
+COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+COMPOSE_PORT_START = 8081
 
 
 def slugify(name: str) -> str:
@@ -69,6 +71,23 @@ def render_string(text: str, replacements: list[tuple[str, str]]) -> str:
     return text
 
 
+def _prune_missing_agent_paths(text: str) -> tuple[str, bool]:
+    """Drop pytest.ini lines that point at agents not present on disk."""
+    changed = False
+    out_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        m = re.match(r"agents/([a-z0-9_]+)/(?:src|tests)$", stripped)
+        if m:
+            slug = m.group(1)
+            agent_dir = DEFAULT_OUTPUT_DIR / slug
+            if not agent_dir.is_dir():
+                changed = True
+                continue
+        out_lines.append(line)
+    return "".join(out_lines), changed
+
+
 def _ensure_pytest_ini(slug: str) -> None:
     """Wire the new agent into the root pytest.ini pythonpath + testpaths."""
     if not PYTEST_INI.exists():
@@ -76,11 +95,13 @@ def _ensure_pytest_ini(slug: str) -> None:
         return
 
     text = PYTEST_INI.read_text(encoding="utf-8")
+    text, pruned = _prune_missing_agent_paths(text)
     src_line = f"    agents/{slug}/src"
     tests_line = f"    agents/{slug}/tests"
-    changed = False
+    changed = pruned
 
     if src_line not in text:
+        # Insert under pythonpath= block (before testpaths=).
         if re.search(r"(?m)^testpaths\s*=", text):
             text = re.sub(
                 r"(?m)^(testpaths\s*=)",
@@ -104,6 +125,53 @@ def _ensure_pytest_ini(slug: str) -> None:
         print(f"Updated {PYTEST_INI.name} for agents/{slug}")
 
 
+def _next_compose_host_port(compose_text: str) -> int:
+    ports = [int(p) for p in re.findall(r'"(\d+):8080"', compose_text)]
+    if not ports:
+        return COMPOSE_PORT_START
+    return max(ports) + 1
+
+
+def _compose_service_block(slug: str, host_port: int) -> str:
+    return (
+        f"\n"
+        f"  {slug}:\n"
+        f"    build:\n"
+        f"      context: .\n"
+        f"      dockerfile: agents/{slug}/Dockerfile\n"
+        f"    env_file: agents/{slug}/.env.example\n"
+        f"    environment:\n"
+        f"      EVENT_BUS_URL: redis://redis:6379/0\n"
+        f"      AGENT_EVENTS_STREAM: agent:events\n"
+        f"    ports:\n"
+        f'      - "{host_port}:8080"\n'
+        f"    depends_on:\n"
+        f"      redis:\n"
+        f"        condition: service_healthy\n"
+    )
+
+
+def _ensure_compose(slug: str) -> None:
+    """Append a Compose service for the new agent if missing."""
+    if not COMPOSE_FILE.exists():
+        print(f"Warning: {COMPOSE_FILE} missing — skip Compose wiring")
+        return
+
+    text = COMPOSE_FILE.read_text(encoding="utf-8")
+    # Match service key at indent 2: "  slug:"
+    if re.search(rf"(?m)^  {re.escape(slug)}:\s*$", text):
+        print(f"Compose already has service '{slug}' — skip")
+        return
+
+    host_port = _next_compose_host_port(text)
+    block = _compose_service_block(slug, host_port)
+    if not text.endswith("\n"):
+        text += "\n"
+    text += block
+    COMPOSE_FILE.write_text(text, encoding="utf-8")
+    print(f"Wired Compose service '{slug}' on host port {host_port}")
+
+
 def generate(
     agent_name: str,
     agent_objective: str,
@@ -113,6 +181,7 @@ def generate(
     author: str = "Bimo Bond Engineering",
     *,
     wire_pytest: bool = True,
+    wire_compose: bool = True,
 ) -> Path:
     replacements = build_replacements(
         agent_name, agent_objective, subscribed_topics, permission_scopes, author
@@ -145,13 +214,16 @@ def generate(
     if not init_py.exists():
         init_py.write_text("", encoding="utf-8")
 
-    if wire_pytest and output_dir.resolve() == DEFAULT_OUTPUT_DIR.resolve():
+    in_default_agents = output_dir.resolve() == DEFAULT_OUTPUT_DIR.resolve()
+    if wire_pytest and in_default_agents:
         _ensure_pytest_ini(slug)
+    if wire_compose and in_default_agents:
+        _ensure_compose(slug)
 
     print(f"Generated agent '{agent_name}' -> {dest_root}")
     print(
-        "Next: implement handle_event(), fill contract TODOs, "
-        f"and add a Compose service for agents/{slug} (see agent README)."
+        "Next: implement handle_event() and fill contract TODOs. "
+        "Compose + pytest are wired automatically when targeting ./agents."
     )
     return dest_root
 
@@ -176,6 +248,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Do not update root pytest.ini",
     )
+    parser.add_argument(
+        "--no-compose-wire",
+        action="store_true",
+        help="Do not update docker-compose.yml",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir
@@ -191,4 +268,5 @@ if __name__ == "__main__":
         output_dir=output_dir,
         author=args.author,
         wire_pytest=not args.no_pytest_wire,
+        wire_compose=not args.no_compose_wire,
     )

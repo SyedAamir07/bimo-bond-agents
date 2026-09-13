@@ -4,6 +4,14 @@ from foundation import AgentSettings
 
 SETTINGS = AgentSettings.from_env(
     agent_name="orchestration_agent",
-    subscribed_topics=tuple("camera.feature.rejected,stream.ended,gift.effect.skipped,task.requested".split(",")),
-    permission_scopes=tuple("orchestration.route.dispatch".split(",")),
+    subscribed_topics=(
+        "camera.feature.rejected",
+        "camera.feature.applied",
+        "stream.ended",
+        "stream.monitor.armed",
+        "gift.effect.skipped",
+        "gift.effect.triggered",
+        "task.requested",
+    ),
+    permission_scopes=("orchestration.route.dispatch",),
 )

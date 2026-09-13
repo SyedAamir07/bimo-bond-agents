@@ -24,7 +24,12 @@ class HealthStatus:
     detail: str = ""
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
+    def refresh(self) -> None:
+        """Stamp checked_at on each poll so /health is not a stale construct time."""
+        self.checked_at = datetime.now(timezone.utc).isoformat()
+
     def to_dict(self) -> dict:
+        self.refresh()
         return {
             "agent_name": self.agent_name,
             "status": self.status.value,

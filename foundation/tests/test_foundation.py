@@ -294,3 +294,103 @@ def test_auction_eligibility_rules():
     )
     assert win.decision == AuctionDecision.ELIGIBLE
     assert win.winner_user_id == "u6"
+
+
+def test_should_dead_letter():
+    from foundation import should_dead_letter
+
+    assert should_dead_letter(1, 5) is False
+    assert should_dead_letter(5, 5) is False
+    assert should_dead_letter(6, 5) is True
+    assert should_dead_letter(99, 0) is False
+
+
+def test_redis_bus_dead_letters_poison_message():
+    """Unit-test RedisStreams DLQ path with a mocked redis client."""
+    from unittest.mock import MagicMock
+
+    from foundation import RedisStreamsEventBus
+
+    bus = RedisStreamsEventBus.__new__(RedisStreamsEventBus)
+    bus.stream_key = "agent:events"
+    bus.consumer_group = "cg:test"
+    bus.max_deliveries = 2
+    bus.dlq_stream_key = "agent:events:dlq"
+    bus._handlers = {"boom": [lambda _e: (_ for _ in ()).throw(RuntimeError("x"))]}
+    bus._client = MagicMock()
+    bus._client.hincrby.side_effect = [1, 2, 3]
+    bus._redis_lib = MagicMock()
+
+    fields = {
+        "event_id": "e1",
+        "event_type": "boom",
+        "source_agent": "t",
+        "correlation_id": "",
+        "occurred_at": "2026-01-01T00:00:00+00:00",
+        "schema_version": "1",
+        "payload": "{}",
+    }
+    bus._dispatch_and_ack("1-0", fields)  # fail, leave pending
+    bus._dispatch_and_ack("1-0", fields)  # fail again
+    bus._dispatch_and_ack("1-0", fields)  # delivery 3 > 2 → DLQ
+    assert bus._client.xadd.call_count >= 1
+    dlq_call = bus._client.xadd.call_args_list[-1]
+    assert dlq_call.args[0] == "agent:events:dlq"
+    bus._client.xack.assert_called()
+
+
+def test_health_checked_at_refreshes():
+    from foundation import HealthStatus, Status
+
+    h = HealthStatus(agent_name="a", status=Status.OK)
+    first = h.checked_at
+    time.sleep(0.01)
+    second = h.to_dict()["checked_at"]
+    assert second >= first
+
+
+def test_event_catalog_pilot_types():
+    from foundation import nest_pilot_event_types
+
+    pilots = nest_pilot_event_types()
+    assert "liveGiftCombo" in pilots
+    assert "liveEnded" in pilots
+
+
+def test_filter_expired_exported():
+    from datetime import datetime, timedelta, timezone
+
+    from foundation import filter_expired
+
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    new = datetime.now(timezone.utc)
+    kept = filter_expired([("a", old), ("b", new)], policy_name="event_envelope")
+    assert [k for k, _ in kept] == ["b"]
+
+
+def test_agent_drops_expired_envelope():
+    from datetime import datetime, timedelta, timezone
+
+    bus = InMemoryEventBus()
+    settings = AgentSettings(
+        agent_name="probe",
+        subscribed_topics=("probe.ping",),
+        permission_scopes=("scope.a",),
+        health_port=18084,
+    )
+    agent = _ProbeAgent(settings, event_bus=bus)
+    agent.run()
+    try:
+        old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        agent._safe_handle_event(
+            EventEnvelope(
+                event_type="probe.ping",
+                source_agent="test",
+                payload={},
+                occurred_at=old,
+            )
+        )
+        assert agent.handled == []
+        assert "events_expired" in agent.metrics.to_prometheus()
+    finally:
+        agent.shutdown()
