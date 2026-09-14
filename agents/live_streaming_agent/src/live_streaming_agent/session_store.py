@@ -41,11 +41,15 @@ class StreamSession:
         Piggyback on TaskRecord's storage shape (see module docstring).
 
         TaskStore.all_dispatched() (used for the stale-session sweep)
-        filters on status == "dispatched", so an ACTIVE session must use
-        that status; ENDED/INTERRUPTED use their own state name so they
-        naturally drop out of the sweep once they stop being active.
+        filters on status == "dispatched". Both ACTIVE and INTERRUPTED
+        sessions must keep that status -- an INTERRUPTED session is
+        mid-reconnect and still needs the sweep to catch it if it goes
+        silent again (e.g. the client never sends another heartbeat or
+        interruption signal after a failed reconnect attempt). Only
+        ENDED sessions use their own state name so they drop out of the
+        sweep once they're genuinely finished.
         """
-        status = "dispatched" if self.state == SessionState.ACTIVE else self.state.value
+        status = "dispatched" if self.state != SessionState.ENDED else self.state.value
         return TaskRecord(
             task_id=self.session_id,
             action=self.state.value,

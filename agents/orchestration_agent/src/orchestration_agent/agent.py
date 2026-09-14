@@ -204,9 +204,19 @@ class OrchestrationAgent(BaseAgent):
             )
             return
 
-        self._dispatch(task_id, action, route, event, attempt=1)
+        self._dispatch(task_id, action, route, event.payload, attempt=1)
 
-    def _dispatch(self, task_id: str, action: str, route: dict, event: EventEnvelope, attempt: int) -> None:
+    def _dispatch(self, task_id: str, action: str, route: dict, task_payload: dict, attempt: int) -> None:
+        """
+        `task_payload` must be the *original* task.requested payload, not
+        whatever event triggered this dispatch call. A retry is driven by
+        a failure or timeout event -- neither carries the real task data
+        (a failure event's payload describes the failure, and a timeout
+        has no payload at all) -- so the record is the only place that
+        data can come from on retry. See _handle_target_failure() and
+        check_timeouts(), which both pass record.payload here instead of
+        the triggering event's payload.
+        """
         record = TaskRecord(
             task_id=task_id,
             action=action,
@@ -214,6 +224,7 @@ class OrchestrationAgent(BaseAgent):
             status=TaskStatus.DISPATCHED.value,
             attempts=attempt,
             dispatched_at=time.time(),
+            payload=task_payload,
         )
         self._store.save(record)
 
@@ -230,7 +241,7 @@ class OrchestrationAgent(BaseAgent):
         # never a broader one, even if the caller asked for more.
         self.publish(
             route["dispatch_event"],
-            payload={**event.payload, "required_scope": route["required_scope"]},
+            payload={**task_payload, "required_scope": route["required_scope"]},
             correlation_id=task_id,
         )
 
@@ -271,7 +282,7 @@ class OrchestrationAgent(BaseAgent):
 
         route = ROUTING_TABLE[record.action]
         self.logger.info("Retrying task_id=%s attempt=%s", task_id, record.attempts + 1)
-        self._dispatch(task_id, record.action, route, event, attempt=record.attempts + 1)
+        self._dispatch(task_id, record.action, route, record.payload, attempt=record.attempts + 1)
 
     # --- timeout sweep ---------------------------------------------------
 
@@ -317,7 +328,7 @@ class OrchestrationAgent(BaseAgent):
                     record.task_id,
                     record.action,
                     route,
-                    EventEnvelope(event_type="timeout", source_agent=self.settings.agent_name, payload={}),
+                    record.payload,
                     attempt=record.attempts + 1,
                 )
 

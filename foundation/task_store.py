@@ -38,6 +38,14 @@ class TaskRecord:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     last_error: str | None = None
+    # The original request payload (e.g. the task.requested event's
+    # payload) so a retry can re-dispatch with the real data instead of
+    # whatever happened to be on the failure/timeout event that
+    # triggered the retry. Optional and defaults to {} so existing
+    # callers that repurpose TaskRecord for their own state (e.g.
+    # live_streaming_agent's session_store, live_auction_agent's
+    # ledger_store) are unaffected.
+    payload: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -54,6 +62,7 @@ class TaskRecord:
             created_at=float(data.get("created_at", time.time())),
             updated_at=float(data.get("updated_at", time.time())),
             last_error=data.get("last_error"),
+            payload=dict(data.get("payload") or {}),
         )
 
 

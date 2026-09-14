@@ -204,6 +204,37 @@ def test_check_stale_sessions_ignores_fresh_sessions():
     assert session.reconnect_attempts == 0
 
 
+def test_check_stale_sessions_catches_interrupted_session_gone_silent_again():
+    """
+    Regression test: an INTERRUPTED session (mid-reconnect after an
+    explicit stream.interrupted event) must still be caught by the
+    stale-session sweep if it goes silent again -- without this, an
+    INTERRUPTED session that never sends another heartbeat or
+    interruption signal would be stuck forever, since it had dropped
+    out of all_active()'s underlying "dispatched" bucket.
+    """
+    agent = _make_agent()
+    agent.handle_event(
+        EventEnvelope(event_type="stream.started", source_agent="test", payload={"session_id": "s1"})
+    )
+    agent.handle_event(
+        EventEnvelope(event_type="stream.interrupted", source_agent="test", payload={"session_id": "s1"})
+    )
+    interrupted = agent.get_session("s1")
+    assert interrupted.state == SessionState.INTERRUPTED
+    assert interrupted.reconnect_attempts == 1
+
+    # Force staleness while still INTERRUPTED (client never came back).
+    interrupted.last_heartbeat_at -= 999
+    agent._sessions.save(interrupted)
+
+    agent.check_stale_sessions()
+
+    swept = agent.get_session("s1")
+    assert swept is not None
+    assert swept.reconnect_attempts == 2  # sweep caught it and retried again
+
+
 def test_session_state_survives_agent_restart():
     """The whole point of the durable SessionStore: a fresh agent
     instance sharing the same store must see sessions from a prior

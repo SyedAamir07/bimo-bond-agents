@@ -59,8 +59,8 @@ NEST_FANOUT_EVENTS: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "auctionUpdated",
         "nestjs",
-        False,
-        "Auction state change — future live_auction_agent",
+        True,
+        "Auction state change — consumed by live_auction_agent",
         (),
     ),
 )
@@ -76,11 +76,16 @@ AGENT_INTERNAL_EVENTS: tuple[CatalogEntry, ...] = (
     CatalogEntry("stream.reconnect.attempted", "agent", True, "Reconnect attempt recorded"),
     CatalogEntry("stream.monitor.armed", "agent", True, "Live agent armed after stream.started"),
     CatalogEntry("stream.ended", "agent", True, "Stream / live ended for orchestration"),
-    CatalogEntry("camera.feature.toggled", "agent", False, "Request camera feature toggle"),
-    CatalogEntry("camera.feature.applied", "agent", False, "Camera feature applied"),
-    CatalogEntry("camera.feature.rejected", "agent", False, "Camera feature rejected"),
-    CatalogEntry("task.requested", "agent", False, "Orchestration task request"),
-    CatalogEntry("task.failed", "agent", False, "Orchestration task failed"),
+    CatalogEntry("camera.feature.toggled", "agent", True, "Request camera feature toggle"),
+    CatalogEntry("camera.feature.applied", "agent", True, "Camera feature applied"),
+    CatalogEntry("camera.feature.rejected", "agent", True, "Camera feature rejected"),
+    CatalogEntry("camera.settings.requested", "agent", True, "Camera settings/catalog requested"),
+    CatalogEntry("camera.settings.reported", "agent", True, "Camera settings/catalog reported"),
+    CatalogEntry("auction.leaderboard.updated", "agent", True, "Auction leaderboard recomputed"),
+    CatalogEntry("auction.settled", "agent", True, "Auction winner cross-check matched the backend"),
+    CatalogEntry("auction.disputed", "agent", True, "Auction winner cross-check mismatch — needs human review"),
+    CatalogEntry("task.requested", "agent", True, "Orchestration task request"),
+    CatalogEntry("task.failed", "agent", True, "Orchestration task failed"),
 )
 
 

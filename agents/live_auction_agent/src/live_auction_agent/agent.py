@@ -131,7 +131,6 @@ class LiveAuctionAgent(BaseAgent):
         last_gift = payload.get("lastGift")
         if isinstance(last_gift, dict) and event.event_id not in ledger.seen_event_ids:
             sender_id = last_gift.get("senderId")
-            coins = payload.get("currentTotalCoins")  # running total, not per-gift
             contribution_coins = last_gift.get("contributionCoins")
             if sender_id and contribution_coins is not None:
                 ledger.contributions.append(

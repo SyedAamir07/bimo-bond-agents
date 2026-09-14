@@ -254,6 +254,71 @@ def test_check_timeouts_fails_task_after_max_retries():
     assert final.status == TaskStatus.TIMED_OUT.value
 
 
+def test_retry_after_failure_redispatches_with_original_task_payload():
+    """
+    Regression test: a retry must carry the ORIGINAL task.requested
+    payload (e.g. session_id), not the failure event's own payload
+    (which describes the failure, not the task) and not an empty dict.
+    Without this, every retried camera/stream/gift task loses its data.
+    """
+    bus = InMemoryEventBus()
+    dispatched_payloads: list[dict] = []
+    bus.subscribe("stream.started", lambda e: dispatched_payloads.append(e.payload))
+
+    agent = OrchestrationAgent(SETTINGS, event_bus=bus)
+    agent.run()
+
+    agent.handle_event(
+        EventEnvelope(
+            event_type="task.requested",
+            source_agent="test",
+            payload={"task_id": "t1", "action": "start_stream_monitor", "session_id": "live-42"},
+        )
+    )
+    assert dispatched_payloads[0]["session_id"] == "live-42"
+
+    # Failure event's own payload deliberately does NOT carry session_id
+    # (mirrors a real stream.ended failure payload, which only has `reason`).
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.ended",
+            source_agent="live_streaming_agent",
+            payload={"reason": "reconnect_attempts_exhausted"},
+            correlation_id="t1",
+        )
+    )
+
+    # The retry dispatch must still carry session_id from the ORIGINAL
+    # task.requested payload, recovered from the stored TaskRecord.
+    assert len(dispatched_payloads) == 2
+    assert dispatched_payloads[1]["session_id"] == "live-42"
+
+
+def test_timeout_retry_redispatches_with_original_task_payload():
+    """Same regression, via the timeout-sweep retry path instead of the
+    failure-event retry path -- check_timeouts() previously dispatched
+    with an empty payload ({}) on every timeout retry."""
+    agent = _make_agent()
+    dispatched_payloads: list[dict] = []
+    agent.event_bus.subscribe("stream.started", lambda e: dispatched_payloads.append(e.payload))
+
+    agent.handle_event(
+        EventEnvelope(
+            event_type="task.requested",
+            source_agent="test",
+            payload={"task_id": "t1", "action": "start_stream_monitor", "session_id": "live-99"},
+        )
+    )
+    record = agent.get_task("t1")
+    record.dispatched_at -= (TASK_TIMEOUT_SECONDS + 1)
+    agent._store.save(record)
+
+    agent.check_timeouts()
+
+    assert len(dispatched_payloads) == 2
+    assert dispatched_payloads[1]["session_id"] == "live-99"
+
+
 def test_task_state_survives_orchestrator_restart():
     """
     The whole point of the durable TaskStore: a fresh OrchestrationAgent
