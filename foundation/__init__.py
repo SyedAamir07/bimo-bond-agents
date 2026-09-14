@@ -14,6 +14,7 @@ from .auction_rules import (
     resolve_purchase_eligibility,
 )
 from .audit import AuditLog, AuditRecord
+from .audit_sink import AuditSink, NullAuditSink, RedisAuditSink, build_audit_sink
 from .backend import BackendClient, BackendClientDisabled
 from .config import AgentSettings
 from .contracts import AgentContract, EventEnvelope, validate_event_payload
@@ -43,6 +44,7 @@ from .retention import (
     get_retention,
     parse_occurred_at,
 )
+from .task_store import InMemoryTaskStore, RedisTaskStore, TaskRecord, TaskStore, build_task_store
 
 __all__ = [
     "AgentSettings",
@@ -72,6 +74,15 @@ __all__ = [
     "RetryPolicy",
     "AuditLog",
     "AuditRecord",
+    "AuditSink",
+    "NullAuditSink",
+    "RedisAuditSink",
+    "build_audit_sink",
+    "TaskStore",
+    "TaskRecord",
+    "InMemoryTaskStore",
+    "RedisTaskStore",
+    "build_task_store",
     "AcceptanceTarget",
     "AcceptanceTracker",
     "PILOT_TARGETS",

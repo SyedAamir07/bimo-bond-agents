@@ -26,6 +26,11 @@ class AgentMetrics:
         with self._lock:
             self._counters[name] += amount
 
+    def snapshot(self) -> dict[str, int]:
+        """Point-in-time copy of all counters (mainly for tests/inspection)."""
+        with self._lock:
+            return dict(self._counters)
+
     def observe_ms(self, name: str, duration_ms: float) -> None:
         with self._lock:
             self._latency_sum_ms[name] += duration_ms

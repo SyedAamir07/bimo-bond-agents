@@ -17,6 +17,7 @@ from typing import Any
 
 from .acceptance import AcceptanceTracker
 from .audit import AuditLog
+from .audit_sink import build_audit_sink
 from .backend import BackendClient
 from .config import AgentSettings
 from .contracts import AgentContract, EventEnvelope, validate_event_payload
@@ -73,6 +74,7 @@ class BaseAgent(ABC):
         self.audit = AuditLog(
             settings.agent_name,
             max_records=settings.audit_max_records,
+            sink=build_audit_sink(settings.event_bus_url),
         )
         self.acceptance = AcceptanceTracker()
         self._dedup = EventDeduplicator(max_size=settings.dedup_max_size)
