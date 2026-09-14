@@ -139,7 +139,11 @@ class RedisStreamsEventBus(EventBus):
         self.max_deliveries = max_deliveries
         self.dlq_stream_key = dlq_stream_key
 
-        self._client = redis_lib.from_url(redis_url, decode_responses=True)
+        # protocol=2 (RESP2): the shared Redis in this project (5.0.x on
+        # Windows) predates RESP3 and rejects the HELLO handshake modern
+        # redis-py attempts by default. RESP2 is fully sufficient for the
+        # commands this bus uses (XADD/XREADGROUP/XACK/XAUTOCLAIM/...).
+        self._client = redis_lib.from_url(redis_url, decode_responses=True, protocol=2)
         self._handlers: dict[str, list[Handler]] = defaultdict(list)
         self._running = False
         self._thread: threading.Thread | None = None

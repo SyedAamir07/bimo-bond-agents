@@ -58,7 +58,9 @@ def _get_client(redis_url: str):
         import redis as redis_lib
     except ImportError as exc:  # pragma: no cover
         raise ImportError("redis package is required — pip install redis") from exc
-    return redis_lib.from_url(redis_url, decode_responses=True)
+    # protocol=2: see event_bus.py's RedisStreamsEventBus for why this
+    # project's Redis (5.0.x) needs RESP2 rather than redis-py's default.
+    return redis_lib.from_url(redis_url, decode_responses=True, protocol=2)
 
 
 def _parse_entry(message_id: str, fields: dict[str, str]) -> DeadLetterEntry:

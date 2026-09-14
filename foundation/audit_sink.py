@@ -64,7 +64,9 @@ class RedisAuditSink(AuditSink):
                 "redis package is required for RedisAuditSink — pip install redis"
             ) from exc
 
-        self._client = redis_lib.from_url(redis_url, decode_responses=True)
+        # protocol=2: see event_bus.py's RedisStreamsEventBus for why this
+        # project's Redis (5.0.x) needs RESP2 rather than redis-py's default.
+        self._client = redis_lib.from_url(redis_url, decode_responses=True, protocol=2)
         self.stream_key = stream_key
         self.maxlen = maxlen
         self._lock = threading.Lock()

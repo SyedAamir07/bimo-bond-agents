@@ -69,3 +69,17 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  live_auction_agent:
+    build:
+      context: .
+      dockerfile: agents/live_auction_agent/Dockerfile
+    env_file: agents/live_auction_agent/.env.example
+    environment:
+      EVENT_BUS_URL: redis://redis:6379/0
+      AGENT_EVENTS_STREAM: agent:events
+    ports:
+      - "8085:8080"
+    depends_on:
+      redis:
+        condition: service_healthy

@@ -127,7 +127,9 @@ class RedisTaskStore(TaskStore):
                 "redis package is required for RedisTaskStore — pip install redis"
             ) from exc
 
-        self._client = redis_lib.from_url(redis_url, decode_responses=True)
+        # protocol=2: see event_bus.py's RedisStreamsEventBus for why this
+        # project's Redis (5.0.x) needs RESP2 rather than redis-py's default.
+        self._client = redis_lib.from_url(redis_url, decode_responses=True, protocol=2)
         self._prefix = key_prefix
         self._dispatched_set_key = f"{key_prefix}:dispatched"
 
