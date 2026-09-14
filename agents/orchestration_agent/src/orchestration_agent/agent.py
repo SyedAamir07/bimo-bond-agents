@@ -1,7 +1,10 @@
 """
 Orchestration Agent
 
-Coordinate events and tasks across agents, track execution status, and manage timeouts, retries, and duplicate execution prevention.
+Coordinate events and tasks across agents, track execution status, and
+manage timeouts, retries, and duplicate execution prevention
+(project doc: AG-10a, proposed 10th agent -- subject to AG-10 approval
+before production use; see README).
 """
 from __future__ import annotations
 
@@ -53,15 +56,35 @@ ROUTING_TABLE: dict[str, dict] = {
 TASK_TIMEOUT_SECONDS = 30
 MAX_RETRIES = 2
 
-# Failure/completion events each target agent emits, mapped back to the
-# action that triggered them, so the orchestrator knows to mark a task
-# complete/failed without each agent needing to know the orchestrator exists.
-FAILURE_EVENTS = {"camera.feature.rejected", "stream.ended", "gift.effect.skipped"}
-SUCCESS_EVENTS = {
-    "camera.feature.applied",
-    "gift.effect.triggered",
-    "stream.monitor.armed",
-}
+# Events each target agent emits back that this orchestrator correlates
+# to a task_id it dispatched. Kept separate from FAILURE/SUCCESS below
+# because some event types (stream.ended) carry both success and
+# failure meanings depending on payload contents -- see
+# _is_stream_ended_failure().
+CORRELATED_EVENT_TYPES = frozenset(
+    {
+        "camera.feature.rejected",
+        "camera.feature.applied",
+        "stream.ended",
+        "stream.monitor.armed",
+        "gift.effect.skipped",
+        "gift.effect.triggered",
+    }
+)
+
+# Unconditional failure/success signals -- the event type alone
+# determines the outcome, no payload inspection needed.
+UNCONDITIONAL_FAILURE_EVENTS = {"camera.feature.rejected", "gift.effect.skipped"}
+UNCONDITIONAL_SUCCESS_EVENTS = {"camera.feature.applied", "gift.effect.triggered", "stream.monitor.armed"}
+
+# stream.ended reasons that represent a genuine failure of the dispatched
+# task (vs. a normal end-of-session that isn't a task failure at all --
+# see live_streaming_agent's StreamSession end reasons).
+STREAM_ENDED_FAILURE_REASONS = {"reconnect_attempts_exhausted", "heartbeat_stale_timeout"}
+
+
+def _is_stream_ended_failure(event: EventEnvelope) -> bool:
+    return event.payload.get("reason") in STREAM_ENDED_FAILURE_REASONS
 
 
 class OrchestrationAgent(BaseAgent):
@@ -78,7 +101,7 @@ class OrchestrationAgent(BaseAgent):
             "gift.effect.triggered",
         ],
         outputs=["camera.feature.toggled", "gift.sent", "stream.started", "task.failed"],
-        tools=["routing_table", "task_store"],
+        tools=["routing_table", "task_store (durable)"],
         permission_scopes=["orchestration.route.dispatch"],
         subscribed_topics=[
             "task.requested",
@@ -96,6 +119,7 @@ class OrchestrationAgent(BaseAgent):
             "no duplicate task_id dispatch",
             "timeouts retried then failed",
             "task state survives orchestrator restart",
+            "routes stay within ROUTING_TABLE -- never a broader scope than declared",
         ],
         automatic_actions=["route_task", "retry_on_failure", "timeout_sweep", "mark_completed"],
         human_review_actions=["approve_new_routing_table_entries"],
@@ -115,12 +139,25 @@ class OrchestrationAgent(BaseAgent):
     def handle_event(self, event: EventEnvelope) -> None:
         if event.event_type == "task.requested":
             self._handle_task_requested(event)
-        elif event.event_type in FAILURE_EVENTS:
-            self._handle_target_failure(event)
-        elif event.event_type in SUCCESS_EVENTS:
-            self._handle_target_success(event)
+        elif event.event_type in CORRELATED_EVENT_TYPES:
+            if self._is_failure(event):
+                self._handle_target_failure(event)
+            else:
+                self._handle_target_success(event)
         else:
             self.logger.warning("Unhandled event_type=%s", event.event_type)
+
+    def _is_failure(self, event: EventEnvelope) -> bool:
+        if event.event_type in UNCONDITIONAL_FAILURE_EVENTS:
+            return True
+        if event.event_type in UNCONDITIONAL_SUCCESS_EVENTS:
+            return False
+        if event.event_type == "stream.ended":
+            return _is_stream_ended_failure(event)
+        # Unreachable given CORRELATED_EVENT_TYPES, but fail closed
+        # (treat as failure) rather than silently marking an unknown
+        # signal as success.
+        return True
 
     # --- task dispatch ---------------------------------------------------
 

@@ -123,12 +123,15 @@ def test_failure_event_retries_until_max_then_fails():
     assert agent.get_task("t1").attempts == 1
 
     # Each failure event should retry until MAX_RETRIES is reached.
+    # reason=reconnect_attempts_exhausted is a genuine failure signal
+    # from live_streaming_agent (unlike reason=live_ended, a normal
+    # session end -- see test_stream_ended_with_live_ended_reason_is_success).
     for _ in range(MAX_RETRIES):
         agent.handle_event(
             EventEnvelope(
                 event_type="stream.ended",
                 source_agent="live_streaming_agent",
-                payload={},
+                payload={"reason": "reconnect_attempts_exhausted"},
                 correlation_id="t1",
             )
         )
@@ -136,6 +139,62 @@ def test_failure_event_retries_until_max_then_fails():
     record = agent.get_task("t1")
     assert record is not None
     assert record.status == TaskStatus.FAILED.value
+
+
+def test_stream_ended_with_live_ended_reason_is_success_not_failure():
+    """
+    A normal end-of-session (reason=live_ended) is not a task failure --
+    only reconnect_attempts_exhausted / heartbeat_stale_timeout are.
+    Without payload inspection, every stream.ended would look identical
+    to a genuine failure and get retried/failed for no reason.
+    """
+    agent = _make_agent()
+    agent.handle_event(
+        EventEnvelope(
+            event_type="task.requested",
+            source_agent="test",
+            payload={"task_id": "t1", "action": "start_stream_monitor"},
+        )
+    )
+
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.ended",
+            source_agent="live_streaming_agent",
+            payload={"reason": "live_ended"},
+            correlation_id="t1",
+        )
+    )
+
+    record = agent.get_task("t1")
+    assert record is not None
+    assert record.status == TaskStatus.COMPLETED.value
+
+
+def test_stream_ended_with_heartbeat_stale_reason_is_failure():
+    agent = _make_agent()
+    agent.handle_event(
+        EventEnvelope(
+            event_type="task.requested",
+            source_agent="test",
+            payload={"task_id": "t1", "action": "start_stream_monitor"},
+        )
+    )
+
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.ended",
+            source_agent="live_streaming_agent",
+            payload={"reason": "heartbeat_stale_timeout"},
+            correlation_id="t1",
+        )
+    )
+
+    record = agent.get_task("t1")
+    assert record is not None
+    # First failure retries rather than fails outright (MAX_RETRIES=2).
+    assert record.status == TaskStatus.DISPATCHED.value
+    assert record.attempts == 2
 
 
 def test_failure_event_for_unknown_task_id_does_not_raise():
