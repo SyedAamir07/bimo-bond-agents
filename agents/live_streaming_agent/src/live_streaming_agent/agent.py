@@ -10,14 +10,31 @@ Design notes (per the project's architectural guidance -- Anthropic,
 LLM agent. Reconnect policy, staleness detection, and session-ended
 handling are all explicit, auditable rules -- nothing here is a
 language-model decision.
+
+ML anomaly detection (anomaly_model.py) runs alongside those rules as
+an advisory early-warning layer: an IsolationForest model, trained on
+sessions this agent has observed complete, scores every heartbeat and
+can publish `stream.health.anomaly_detected` before any fixed
+threshold is crossed. It never overrides or gates the deterministic
+reconnect/end-session logic below -- same principle live_auction_agent
+follows for money-moving decisions (don't assign the final decision
+solely to a model). See anomaly_model.py's module docstring for why
+IsolationForest specifically, and the cold-start fallback behavior.
 """
 from __future__ import annotations
 
 import time
 
-from foundation import AgentContract, BaseAgent, EventEnvelope
+from foundation import AgentContract, BaseAgent, EventEnvelope, build_task_store
 
-from .config import HEARTBEAT_STALE_SECONDS, MAX_RECONNECT_ATTEMPTS
+from .anomaly_model import StreamAnomalyModel, TrainingSampleStore
+from .config import (
+    HEARTBEAT_STALE_SECONDS,
+    MAX_RECONNECT_ATTEMPTS,
+    ML_CONTAMINATION,
+    ML_MIN_TRAINING_SAMPLES,
+    ML_RETRAIN_INTERVAL_SAMPLES,
+)
 from .session_store import SessionState, StreamSession, build_session_store
 
 
@@ -36,7 +53,8 @@ class LiveStreamingAgent(BaseAgent):
     objective = (
         "Monitor stream quality and stability, detect interruptions, "
         "manage reconnection attempts, and track performance indicators "
-        "for a stable streaming experience."
+        "for a stable streaming experience, with an ML anomaly-detection "
+        "model providing advisory early-warning signals."
     )
     contract = AgentContract(
         objective=objective,
@@ -50,8 +68,9 @@ class LiveStreamingAgent(BaseAgent):
             "stream.reconnect.attempted",
             "stream.ended",
             "stream.monitor.armed",
+            "stream.health.anomaly_detected",
         ],
-        tools=["session_store (durable)", "backend_http_client"],
+        tools=["session_store (durable)", "backend_http_client", "IsolationForest anomaly model (in-process)"],
         permission_scopes=["stream.session.read", "stream.session.write"],
         subscribed_topics=[
             "stream.started",
@@ -64,11 +83,13 @@ class LiveStreamingAgent(BaseAgent):
             "stream.reconnect.attempted",
             "stream.ended",
             "stream.monitor.armed",
+            "stream.health.anomaly_detected",
         ],
         failure_cases=[
             "reconnect_attempts_exhausted",
             "heartbeat_stale_timeout",
             "infra_unavailable",
+            "model_not_trained (not an error -- falls back to no-anomaly-flagged)",
         ],
         owner="platform-live",
         acceptance_criteria=[
@@ -76,14 +97,17 @@ class LiveStreamingAgent(BaseAgent):
             "stream_interruption_rate tracked against baseline/target",
             "stream_reconnect_success_rate tracked against baseline/target",
             "session state survives an agent restart",
+            "anomaly score is advisory only -- never solely ends a session or blocks a reconnect",
         ],
         automatic_actions=[
             "arm_monitor_on_start",
             "reconnect_within_policy",
             "end_session_on_reconnect_exhausted",
             "end_session_on_heartbeat_stale",
+            "score_heartbeat_for_anomaly",
+            "retrain_model_on_session_completion",
         ],
-        human_review_actions=["raise_max_reconnect_attempts"],
+        human_review_actions=["raise_max_reconnect_attempts", "tune_ml_contamination_rate"],
     )
 
     def __init__(self, *args, **kwargs) -> None:
@@ -95,6 +119,22 @@ class LiveStreamingAgent(BaseAgent):
         self._sessions = build_session_store(
             self.settings.event_bus_url,
             key_prefix=f"live_streaming:{self.settings.agent_name}:sessions",
+        )
+        # Durable training samples: same Redis-vs-in-memory split as the
+        # session store. On a restart against Redis, the model refits
+        # from persisted samples immediately (see StreamAnomalyModel.__init__)
+        # instead of climbing back to ML_MIN_TRAINING_SAMPLES from zero.
+        sample_store = TrainingSampleStore(
+            build_task_store(
+                self.settings.event_bus_url,
+                key_prefix=f"live_streaming:{self.settings.agent_name}:ml_samples",
+            )
+        )
+        self._model = StreamAnomalyModel(
+            min_training_samples=ML_MIN_TRAINING_SAMPLES,
+            retrain_interval_samples=ML_RETRAIN_INTERVAL_SAMPLES,
+            contamination=ML_CONTAMINATION,
+            sample_store=sample_store,
         )
 
     # --- BaseAgent hook ---------------------------------------------------
@@ -135,7 +175,11 @@ class LiveStreamingAgent(BaseAgent):
             "stream.session_started",
             correlation_id=session_id,
             event_id=event.event_id,
-            detail={"startup_ms": startup_ms},
+            detail={
+                "startup_ms": startup_ms,
+                "model_trained": self._model.is_trained,
+                "training_samples": self._model.sample_count,
+            },
         )
         self.logger.info("Stream started session_id=%s", session_id)
         self.publish(
@@ -158,9 +202,38 @@ class LiveStreamingAgent(BaseAgent):
             self.logger.info("Adopting unseen session_id=%s on heartbeat", session_id)
 
         session.state = SessionState.ACTIVE
+        session.heartbeat_count += 1
         session.last_heartbeat_at = time.time()
+
+        prediction = self._model.predict(session.feature_vector())
+        session.last_anomaly_score = prediction.score
         self._sessions.save(session)
-        self.logger.debug("Heartbeat session_id=%s", session_id)
+
+        if prediction.model_ready and prediction.is_anomaly:
+            self.logger.warning(
+                "session_id=%s ML anomaly detected score=%.4f heartbeats=%d interruptions=%d",
+                session_id, prediction.score, session.heartbeat_count, session.interruption_count,
+            )
+            self.audit.record(
+                "stream.health.anomaly_detected",
+                correlation_id=session_id,
+                event_id=event.event_id,
+                detail={
+                    "score": prediction.score,
+                    "heartbeat_count": session.heartbeat_count,
+                    "interruption_count": session.interruption_count,
+                },
+            )
+            self.publish(
+                "stream.health.anomaly_detected",
+                payload={"session_id": session_id, "score": prediction.score, "reason": "ml_isolation_forest"},
+                correlation_id=event.correlation_id or session_id,
+            )
+
+        self.logger.debug(
+            "Heartbeat session_id=%s count=%d anomaly_score=%s",
+            session_id, session.heartbeat_count, prediction.score if prediction.model_ready else "n/a",
+        )
 
     def _handle_interruption(self, event: EventEnvelope) -> None:
         session_id = _session_id_from(event.payload)
@@ -174,6 +247,7 @@ class LiveStreamingAgent(BaseAgent):
         if session is None:
             session = StreamSession(session_id=session_id, state=SessionState.ACTIVE)
 
+        session.interruption_count += 1
         self.acceptance.observe("stream_interruption_rate", 1.0)
 
         if session.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS:
@@ -239,13 +313,26 @@ class LiveStreamingAgent(BaseAgent):
     ) -> None:
         session.state = SessionState.ENDED
         session.end_reason = reason
+        session.last_heartbeat_at = time.time()
         self._sessions.save(session)
+
+        # Feed this completed session into the ML model's training set --
+        # this is what lets the model improve over time. Only completed
+        # sessions are used for training (a stable, final feature vector),
+        # not in-flight ones.
+        self._model.record_completed_session(session.feature_vector())
 
         self.audit.record(
             "stream.session_ended",
             correlation_id=session.session_id,
             event_id=event_id,
-            detail={"reason": reason, "reconnect_attempts": session.reconnect_attempts},
+            detail={
+                "reason": reason,
+                "reconnect_attempts": session.reconnect_attempts,
+                "heartbeat_count": session.heartbeat_count,
+                "interruption_count": session.interruption_count,
+                "model_sample_count": self._model.sample_count,
+            },
         )
         self.logger.info("Session ended session_id=%s reason=%s", session.session_id, reason)
         self.publish(
@@ -304,3 +391,8 @@ class LiveStreamingAgent(BaseAgent):
     def get_session(self, session_id: str) -> StreamSession | None:
         """Expose session state for tests / ops inspection."""
         return self._sessions.get(session_id)
+
+    @property
+    def model(self) -> StreamAnomalyModel:
+        """Expose the ML anomaly model for tests / ops inspection."""
+        return self._model
