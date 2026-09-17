@@ -86,7 +86,7 @@ class BaseAgent(ABC):
         )
         self._health_server = HealthServer(
             settings.health_port,
-            health_provider=lambda: self.health,
+            health_provider=self._current_health,
             contract_provider=self.get_contract,
             metrics_provider=lambda: self.metrics,
             audit_provider=lambda: self.audit,
@@ -144,6 +144,29 @@ class BaseAgent(ABC):
 
     def get_contract(self) -> AgentContract | None:
         return self.contract
+
+    def active_sessions_count(self) -> int:
+        """
+        How many in-flight units of work (sessions, auctions, whatever this
+        agent tracks) this agent currently considers active. Surfaced on
+        /health so a fleet dashboard (AgentsAdminService) can show real
+        load instead of a placeholder zero.
+
+        Foundation has no concept of "session" — override in the concrete
+        agent (e.g. `len(self._sessions.active_ids())`) wherever it already
+        tracks in-flight state. Defaults to 0 for agents with no such
+        concept (stateless event handlers).
+        """
+        return 0
+
+    def _current_health(self) -> HealthStatus:
+        """Stamp the live counters onto self.health right before /health
+        serializes it, rather than keeping them updated on every mutation —
+        cheaper, and correct by construction since there's a single
+        source of truth (metrics counter, active_sessions_count())."""
+        self.health.error_count = self.metrics.get("events_failed")
+        self.health.active_sessions = self.active_sessions_count()
+        return self.health
 
     # --- event handling --------------------------------------------------
 

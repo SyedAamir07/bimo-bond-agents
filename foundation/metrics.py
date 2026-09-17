@@ -26,6 +26,10 @@ class AgentMetrics:
         with self._lock:
             self._counters[name] += amount
 
+    def get(self, name: str) -> int:
+        with self._lock:
+            return self._counters[name]
+
     def snapshot(self) -> dict[str, int]:
         """Point-in-time copy of all counters (mainly for tests/inspection)."""
         with self._lock:

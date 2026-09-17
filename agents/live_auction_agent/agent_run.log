@@ -1,0 +1,4 @@
+2026-09-17 10:06:34,592 | level=INFO | agent=live_auction_agent | live_auction_agent | Starting agent=live_auction_agent version=0.1.0 env=development bus=redis://localhost:6380
+2026-09-17 10:06:34,597 | level=INFO | agent=live_auction_agent | foundation.health_server | Health server listening on port=8085
+2026-09-17 10:06:34,621 | level=INFO | agent=live_auction_agent | foundation.event_bus | RedisStreamsEventBus started stream=agent:events group=cg:live_auction_agent consumer=live_auction_agent-1 dlq=agent:events:dlq
+2026-09-17 10:06:34,622 | level=INFO | agent=live_auction_agent | live_auction_agent | Agent=live_auction_agent is up, subscribed to topics=('auctionUpdated', 'liveGiftCombo', 'liveEnded')

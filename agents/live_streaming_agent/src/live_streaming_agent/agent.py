@@ -137,7 +137,10 @@ class LiveStreamingAgent(BaseAgent):
             sample_store=sample_store,
         )
 
-    # --- BaseAgent hook ---------------------------------------------------
+    # --- BaseAgent hooks ---------------------------------------------------
+
+    def active_sessions_count(self) -> int:
+        return len(self._sessions.all_active())
 
     def handle_event(self, event: EventEnvelope) -> None:
         if event.event_type == "stream.started":

@@ -105,6 +105,28 @@ class LedgerStore:
     def delete(self, auction_id: str) -> None:
         self._store.delete(auction_id)
 
+    _TERMINAL_STATUSES = frozenset({"COMPLETED", "CANCELLED", "EXPIRED"})
+
+    def all_active(self) -> list[AuctionLedger]:
+        """
+        Auctions this agent is still tracking that haven't reached a
+        terminal backend status yet.
+
+        Every ledger is stored as TaskRecord.status="dispatched" (see
+        AuctionLedger.to_task_record) regardless of the auction's own
+        lifecycle -- there's no separate "settled" bucket in the store, so
+        this filters on last_known_backend_status instead of trusting
+        all_dispatched() alone (which would otherwise count every auction
+        this agent has ever seen).
+        """
+        return [
+            ledger
+            for ledger in (
+                AuctionLedger.from_task_record(r) for r in self._store.all_dispatched()
+            )
+            if ledger.last_known_backend_status not in self._TERMINAL_STATUSES
+        ]
+
 
 def build_ledger_store(event_bus_url: str, *, key_prefix: str = "live_auction:ledgers") -> LedgerStore:
     return LedgerStore(build_task_store(event_bus_url, key_prefix=key_prefix))

@@ -98,7 +98,10 @@ class LiveAuctionAgent(BaseAgent):
             key_prefix=f"live_auction:{self.settings.agent_name}:ledgers",
         )
 
-    # --- BaseAgent hook ---------------------------------------------------
+    # --- BaseAgent hooks ---------------------------------------------------
+
+    def active_sessions_count(self) -> int:
+        return len(self._ledgers.all_active())
 
     def handle_event(self, event: EventEnvelope) -> None:
         if event.event_type == "auctionUpdated":
