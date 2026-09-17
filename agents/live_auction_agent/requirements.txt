@@ -2,7 +2,3 @@
 -e ../../foundation
 
 # Add this agent's own dependencies below
-
-# ML anomaly detection (IsolationForest) for advisory early-warning stream health prediction.
-scikit-learn>=1.4,<2
-numpy>=1.26,<3

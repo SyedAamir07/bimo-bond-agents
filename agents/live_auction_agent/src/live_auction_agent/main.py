@@ -1,12 +1,12 @@
-"""Entrypoint: `python -m src.gift_effects_agent.main`"""
+"""Entrypoint: `python -m src.live_auction_agent.main`"""
 import time
 
-from .agent import GiftEffectsAgent
+from .agent import LiveAuctionAgent
 from .config import SETTINGS
 
 
 def main() -> None:
-    agent = GiftEffectsAgent(SETTINGS)
+    agent = LiveAuctionAgent(SETTINGS)
     agent.run()
     try:
         while True:

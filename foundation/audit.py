@@ -2,8 +2,10 @@
 Structured audit trail for sensitive / privileged agent actions.
 
 Per the foundation doc: log actions under least privilege. This is an
-append-only in-process + stdout record; production should ship these
-lines to a durable store. Never log secrets or full PII payloads.
+append-only in-process + stdout record, optionally mirrored to a durable
+AuditSink (see audit_sink.py) so the trail survives a process restart —
+required for the 90-day `audit_record` retention policy in retention.py.
+Never log secrets or full PII payloads.
 """
 from __future__ import annotations
 
@@ -13,7 +15,10 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .audit_sink import AuditSink
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +43,18 @@ class AuditRecord:
 class AuditLog:
     """Bounded ring buffer + structured log line for each sensitive action."""
 
-    def __init__(self, agent_name: str, *, max_records: int = 1_000) -> None:
+    def __init__(
+        self,
+        agent_name: str,
+        *,
+        max_records: int = 1_000,
+        sink: "AuditSink | None" = None,
+    ) -> None:
         self.agent_name = agent_name
         self._max = max(1, max_records)
         self._records: deque[AuditRecord] = deque(maxlen=self._max)
         self._lock = threading.Lock()
+        self._sink = sink
 
     def record(
         self,
@@ -74,6 +86,8 @@ class AuditLog:
             rec.event_id,
             json.dumps(rec.detail, default=str),
         )
+        if self._sink is not None:
+            self._sink.write(rec.to_dict())
         return rec
 
     def recent(self, limit: int = 50) -> list[AuditRecord]:

@@ -24,6 +24,15 @@ class HealthStatus:
     detail: str = ""
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
+    # Live counters surfaced to /health so a monitoring dashboard (or
+    # AgentsAdminService's fleet probe) doesn't need a second endpoint just
+    # to show "how much work is this agent doing right now". Each agent
+    # updates these via its own callback (see active_sessions_provider /
+    # error_count_provider on BaseAgent) -- foundation has no notion of what
+    # a "session" is, so it can't compute them itself.
+    active_sessions: int = 0
+    error_count: int = 0
+
     def refresh(self) -> None:
         """Stamp checked_at on each poll so /health is not a stale construct time."""
         self.checked_at = datetime.now(timezone.utc).isoformat()
@@ -35,4 +44,6 @@ class HealthStatus:
             "status": self.status.value,
             "detail": self.detail,
             "checked_at": self.checked_at,
+            "active_sessions": self.active_sessions,
+            "error_count": self.error_count,
         }

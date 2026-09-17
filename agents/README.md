@@ -8,9 +8,10 @@ All concrete Bimo Bond agents live here. Shared plumbing stays in
 
 | Folder | Role |
 |---|---|
-| `camera_agent/` | Camera features / quality |
-| `live_streaming_agent/` | Stream stability / reconnect |
+| `camera_agent/` | Camera features / quality (catalog-driven approval) |
+| `live_streaming_agent/` | Stream stability / reconnect (deterministic rules) + ML anomaly-detection early-warning layer |
 | `gift_effects_agent/` | Gift overlay effects |
+| `live_auction_agent/` | Gift ledger + independent winner cross-check |
 | `orchestration_agent/` | Cross-agent task routing |
 
 ## Add a new agent

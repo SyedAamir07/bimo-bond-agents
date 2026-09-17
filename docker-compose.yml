@@ -3,6 +3,14 @@
 #
 # Set EVENT_BUS_URL=redis://redis:6379/0 for all agents (default below).
 # NestJS can fan domain events into the same stream when AGENT_EVENTS_ENABLED=true.
+#
+# HEALTH_PORT is always forced to 8080 here (container-internal) even
+# though each agent's own .env.example sets a different HEALTH_PORT for
+# local (non-Docker) runs, where agents share one host and must bind to
+# distinct ports. Inside Compose each agent has its own container, so
+# 8080 internally + a distinct host port below (8081..8085) is correct;
+# without this override the env_file's local-dev HEALTH_PORT would win
+# and the port mapping below would point at nothing.
 services:
   redis:
     image: redis:7-alpine
@@ -22,6 +30,7 @@ services:
     environment:
       EVENT_BUS_URL: redis://redis:6379/0
       AGENT_EVENTS_STREAM: agent:events
+      HEALTH_PORT: "8080"
     ports:
       - "8081:8080"
     depends_on:
@@ -36,6 +45,7 @@ services:
     environment:
       EVENT_BUS_URL: redis://redis:6379/0
       AGENT_EVENTS_STREAM: agent:events
+      HEALTH_PORT: "8080"
     ports:
       - "8082:8080"
     depends_on:
@@ -50,6 +60,7 @@ services:
     environment:
       EVENT_BUS_URL: redis://redis:6379/0
       AGENT_EVENTS_STREAM: agent:events
+      HEALTH_PORT: "8080"
     ports:
       - "8083:8080"
     depends_on:
@@ -64,8 +75,24 @@ services:
     environment:
       EVENT_BUS_URL: redis://redis:6379/0
       AGENT_EVENTS_STREAM: agent:events
+      HEALTH_PORT: "8080"
     ports:
       - "8084:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  live_auction_agent:
+    build:
+      context: .
+      dockerfile: agents/live_auction_agent/Dockerfile
+    env_file: agents/live_auction_agent/.env.example
+    environment:
+      EVENT_BUS_URL: redis://redis:6379/0
+      AGENT_EVENTS_STREAM: agent:events
+      HEALTH_PORT: "8080"
+    ports:
+      - "8085:8080"
     depends_on:
       redis:
         condition: service_healthy

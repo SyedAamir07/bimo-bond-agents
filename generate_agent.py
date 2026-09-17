@@ -133,6 +133,14 @@ def _next_compose_host_port(compose_text: str) -> int:
 
 
 def _compose_service_block(slug: str, host_port: int) -> str:
+    # HEALTH_PORT is force-set to 8080 (container-internal) even though
+    # each agent's .env.example sets a different HEALTH_PORT for local
+    # (non-Docker) runs, where multiple agents share one host and need
+    # distinct ports. Inside Compose each agent has its own container,
+    # so 8080 internally + a distinct host port (host_port:8080 below)
+    # is correct -- without this override, the env_file's local-dev
+    # HEALTH_PORT would win and the port mapping below would point at
+    # nothing (see docker-compose.yml's other services for the same pattern).
     return (
         f"\n"
         f"  {slug}:\n"
@@ -143,6 +151,7 @@ def _compose_service_block(slug: str, host_port: int) -> str:
         f"    environment:\n"
         f"      EVENT_BUS_URL: redis://redis:6379/0\n"
         f"      AGENT_EVENTS_STREAM: agent:events\n"
+        f'      HEALTH_PORT: "8080"\n'
         f"    ports:\n"
         f'      - "{host_port}:8080"\n'
         f"    depends_on:\n"

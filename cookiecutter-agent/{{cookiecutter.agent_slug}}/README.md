@@ -82,6 +82,7 @@ Manual example (host port is auto-picked by the generator):
     environment:
       EVENT_BUS_URL: redis://redis:6379/0
       AGENT_EVENTS_STREAM: agent:events
+      HEALTH_PORT: "8080"  # force container-internal port; see .env.example
     ports:
       - "8085:8080"
     depends_on:
