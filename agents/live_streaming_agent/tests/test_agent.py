@@ -519,3 +519,67 @@ def test_live_streaming_agent_wires_durable_sample_store_by_default():
     silently never applies in production."""
     agent = _make_agent()
     assert agent.model._sample_store is not None
+
+
+def test_start_failed_counts_as_error_without_a_session():
+    agent = _make_agent()
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.start_failed",
+            source_agent="test",
+            payload={"reason": "login_failed", "statusCode": 401, "path": "/lives"},
+        )
+    )
+    assert agent.active_sessions_count() == 0
+    assert agent.metrics.get("stream_issues") == 1
+
+
+def test_client_health_mute_is_an_error_but_not_an_interruption():
+    agent = _make_agent()
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.started",
+            source_agent="test",
+            payload={"session_id": "s1"},
+        )
+    )
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.client_health",
+            source_agent="test",
+            payload={"session_id": "s1", "publishing": True, "muted": True, "beautyOk": True},
+        )
+    )
+    session = agent.get_session("s1")
+    assert session is not None
+    assert session.state == SessionState.ACTIVE
+    assert session.reconnect_attempts == 0
+    assert agent.metrics.get("stream_issues") == 1
+
+
+def test_client_health_camera_freeze_interrupts():
+    agent = _make_agent()
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.started",
+            source_agent="test",
+            payload={"session_id": "s1"},
+        )
+    )
+    agent.handle_event(
+        EventEnvelope(
+            event_type="stream.client_health",
+            source_agent="test",
+            payload={
+                "session_id": "s1",
+                "publishing": False,
+                "cameraFrozen": True,
+                "networkOk": True,
+            },
+        )
+    )
+    session = agent.get_session("s1")
+    assert session is not None
+    assert session.state == SessionState.INTERRUPTED
+    assert agent.metrics.get("stream_issues") >= 1
+

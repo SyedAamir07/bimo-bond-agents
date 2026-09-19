@@ -62,6 +62,9 @@ class LiveStreamingAgent(BaseAgent):
             "stream.started",
             "stream.heartbeat",
             "stream.interrupted",
+            "stream.start_failed",
+            "stream.media_failed",
+            "stream.client_health",
             "liveEnded",
         ],
         outputs=[
@@ -77,6 +80,9 @@ class LiveStreamingAgent(BaseAgent):
             "stream.heartbeat",
             "stream.interrupted",
             "stream.reconnect.attempted",
+            "stream.start_failed",
+            "stream.media_failed",
+            "stream.client_health",
             "liveEnded",
         ],
         published_topics=[
@@ -89,6 +95,9 @@ class LiveStreamingAgent(BaseAgent):
             "reconnect_attempts_exhausted",
             "heartbeat_stale_timeout",
             "infra_unavailable",
+            "start_failed",
+            "media_failed",
+            "client_health",
             "model_not_trained (not an error -- falls back to no-anomaly-flagged)",
         ],
         owner="platform-live",
@@ -136,11 +145,21 @@ class LiveStreamingAgent(BaseAgent):
             contamination=ML_CONTAMINATION,
             sample_store=sample_store,
         )
+        # One count per session+kind for the life of this process, so a
+        # phone that stays muted does not inflate Errors every 15 seconds.
+        self._open_issues: set[str] = set()
 
     # --- BaseAgent hooks ---------------------------------------------------
 
     def active_sessions_count(self) -> int:
         return len(self._sessions.all_active())
+
+    def _current_health(self):
+        health = super()._current_health()
+        health.error_count = self.metrics.get("events_failed") + self.metrics.get(
+            "stream_issues"
+        )
+        return health
 
     def handle_event(self, event: EventEnvelope) -> None:
         if event.event_type == "stream.started":
@@ -151,6 +170,12 @@ class LiveStreamingAgent(BaseAgent):
             self._handle_interruption(event)
         elif event.event_type == "liveEnded":
             self._handle_live_ended(event)
+        elif event.event_type == "stream.start_failed":
+            self._handle_start_failed(event)
+        elif event.event_type == "stream.media_failed":
+            self._handle_media_failed(event)
+        elif event.event_type == "stream.client_health":
+            self._handle_client_health(event)
         elif event.event_type == "stream.reconnect.attempted":
             # Emitted by this agent itself; nothing further to do on receipt.
             return
@@ -247,6 +272,8 @@ class LiveStreamingAgent(BaseAgent):
             return
 
         session = self._sessions.get(session_id)
+        if session is not None and session.state == SessionState.ENDED:
+            return
         if session is None:
             session = StreamSession(session_id=session_id, state=SessionState.ACTIVE)
 
@@ -304,7 +331,77 @@ class LiveStreamingAgent(BaseAgent):
             event_id=event.event_id,
         )
 
+    def _handle_start_failed(self, event: EventEnvelope) -> None:
+        reason = str(event.payload.get("reason") or "start_failed")
+        self._record_stream_issue(None, reason, event)
+        self.logger.warning(
+            "Live start failed reason=%s status=%s path=%s",
+            reason,
+            event.payload.get("statusCode"),
+            event.payload.get("path"),
+        )
+
+    def _handle_media_failed(self, event: EventEnvelope) -> None:
+        session_id = _session_id_from(event.payload)
+        reason = str(event.payload.get("reason") or "media_failed")
+        self._record_stream_issue(session_id, reason, event)
+        self.logger.warning(
+            "Live media failed session_id=%s reason=%s", session_id, reason
+        )
+        if session_id:
+            self._handle_interruption(event)
+
+    def _handle_client_health(self, event: EventEnvelope) -> None:
+        session_id = _session_id_from(event.payload)
+        publishing = event.payload.get("publishing") is True
+        camera_frozen = event.payload.get("cameraFrozen") is True
+        network_ok = event.payload.get("networkOk") is not False
+        muted = event.payload.get("muted") is True
+        beauty_ok = event.payload.get("beautyOk") is not False
+
+        kinds: list[str] = []
+        if not publishing:
+            kinds.append("not_publishing")
+        if camera_frozen:
+            kinds.append("camera_frozen")
+        if not network_ok:
+            kinds.append("network_down")
+        if muted:
+            kinds.append("muted")
+        if not beauty_ok:
+            kinds.append("beauty_failed")
+        if not kinds:
+            kinds.append("client_unhealthy")
+
+        for kind in kinds:
+            self._record_stream_issue(session_id, kind, event)
+
+        # Mute and beauty are quality issues. A dead camera, no video, or
+        # a dropped network is an interruption. Silence (no further
+        # heartbeats) is what ends the session after the stale window.
+        if session_id and (not publishing or camera_frozen or not network_ok):
+            self._handle_interruption(event)
+
     # --- shared helpers ----------------------------------------------------
+
+    def _record_stream_issue(
+        self,
+        session_id: str | None,
+        kind: str,
+        event: EventEnvelope,
+    ) -> None:
+        key = f"{session_id or event.event_id}:{kind}"
+        if session_id and key in self._open_issues:
+            return
+        if session_id:
+            self._open_issues.add(key)
+        self.metrics.incr("stream_issues")
+        self.audit.record(
+            "stream.issue",
+            correlation_id=session_id,
+            event_id=event.event_id,
+            detail={"kind": kind, "payload": event.payload},
+        )
 
     def _end_session(
         self,
